@@ -3,6 +3,7 @@ import * as THREE from "three";
 const WORLD_WIDTH_KM = 42315;
 const WORLD_HEIGHT_KM = 18855;
 const DEFAULT_KM_PER_PX = 15;
+const METERS_PER_KM = 1000;
 
 function getDistanceScaleKmPerPx(world) {
   const scale = Number(world?.settings?.distanceScale);
@@ -93,8 +94,12 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     width: Number(world?.info?.width || fallbackSize.width),
     height: Number(world?.info?.height || fallbackSize.height),
     radius: 12,
-    center: new THREE.Vector3(0, -12.5, 0),
+    center: new THREE.Vector3(0, 0, 0),
   };
+
+  const kmPerPx = getDistanceScaleKmPerPx(world);
+  const mapWidthMeters = info.width * kmPerPx * METERS_PER_KM;
+  info.radius = mapWidthMeters / (Math.PI * 2);
 
   const worldRoot = new THREE.Group();
   worldRoot.name = "generatedWorld";
@@ -128,11 +133,11 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     const points2D = polygonPointsFromFeature(f, vertices);
     if (!points2D) continue;
 
-    const landGeo = buildSphericalLandGeometry(points2D, info, 0.09);
+    const landGeo = buildSphericalLandGeometry(points2D, info, 350);
     if (!landGeo) continue;
     landGroup.add(new THREE.Mesh(landGeo, landMat));
 
-    const coastPoints = points2D.map((p) => mapToSphere(p.x, p.y, { ...info, radius: info.radius + 0.12 }));
+    const coastPoints = points2D.map((p) => mapToSphere(p.x, p.y, { ...info, radius: info.radius + 450 }));
     const coastGeo = new THREE.BufferGeometry().setFromPoints(coastPoints);
     coastGroup.add(new THREE.LineLoop(coastGeo, coastMat));
   }
@@ -143,7 +148,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     const points2D = polygonPointsFromCell(cell, vertices);
     if (!points2D) continue;
 
-    const elev = Number(cell.h || 0) > 19 ? 0.11 : 0.05;
+    const elev = Number(cell.h || 0) > 19 ? 420 : 180;
     const cellPoints = points2D.map((p) => mapToSphere(p.x, p.y, { ...info, radius: info.radius + elev }));
     const cellGeo = new THREE.BufferGeometry().setFromPoints(cellPoints);
     const cellIsLand = Number(cell.h || 0) > 19;
@@ -154,16 +159,19 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const cityMat = new THREE.MeshStandardMaterial({ color: 0xa8d8ff });
   const townMat = new THREE.MeshStandardMaterial({ color: 0xb6c8a8 });
 
-  const markerGeo = new THREE.SphereGeometry(0.08, 10, 8);
+  const markerGeo = new THREE.CircleGeometry(700, 24);
+  const markerUp = new THREE.Vector3();
   for (const b of burgs) {
     if (!b || b.removed || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
 
     const pop = Number(b.population || 0);
     const mat = b.capital ? capitalMat : pop >= 5 ? cityMat : townMat;
-    const base = mapToSphere(b.x, b.y, { ...info, radius: info.radius + 0.2 });
+    const base = mapToSphere(b.x, b.y, { ...info, radius: info.radius + 600 });
 
     const marker = new THREE.Mesh(markerGeo, mat);
     marker.position.copy(base);
+    markerUp.copy(base).sub(info.center).normalize();
+    marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), markerUp);
     settlementPositions.push({
       name: b.name || "Settlement",
       isCapital: !!b.capital,
@@ -184,7 +192,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     planet: {
       center: info.center.clone(),
       oceanRadius: info.radius,
-      settlementAltitude: 0.2,
+      settlementAltitude: 600,
     },
     settlementPositions,
     cleanup() {

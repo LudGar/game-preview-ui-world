@@ -277,7 +277,7 @@ overlayRenderer.outputColorSpace = THREE.SRGBColorSpace;
 overlayRenderer.setClearColor(0x000000, 0);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 200);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 20_000_000);
 camera.position.set(0, 1.6, 4.25);
 scene.add(camera);
 
@@ -342,9 +342,13 @@ const planetaryMotion = {
   center: new THREE.Vector3(0, 0, 0),
   surfaceRadius: 1,
   gravityMps2: 18,
+  moveSpeedMps: 4.5,
+  moveAccelMps2: 24,
   velocity: new THREE.Vector3(),
   lastTimeS: performance.now() / 1000,
 };
+
+const movementInput = { w: false, a: false, s: false, d: false };
 
 const _gravityUp = new THREE.Vector3();
 const _gravityDir = new THREE.Vector3();
@@ -368,6 +372,37 @@ function updatePlanetaryCharacterMotion() {
   planetaryMotion.lastTimeS = nowS;
 
   _gravityDir.copy(planetaryMotion.center).sub(characterWorld.position).normalize();
+
+  _moveDesired.set(0, 0, 0);
+  if (movementInput.w) _moveDesired.z -= 1;
+  if (movementInput.s) _moveDesired.z += 1;
+  if (movementInput.a) _moveDesired.x -= 1;
+  if (movementInput.d) _moveDesired.x += 1;
+
+  _moveNormal.copy(characterWorld.position).sub(planetaryMotion.center).normalize();
+  _moveForward.copy(camera.position).sub(characterWorld.position).negate().normalize();
+  _moveForward.projectOnPlane(_moveNormal);
+  if (_moveForward.lengthSq() < 1e-6) {
+    _moveForwardLocal.set(0, 0, -1).applyQuaternion(characterWorld.quaternion);
+    _moveForward.copy(_moveForwardLocal).projectOnPlane(_moveNormal);
+  }
+  _moveForward.normalize();
+  _moveRight.crossVectors(_moveForward, _moveNormal).normalize();
+
+  if (_moveDesired.lengthSq() > 0) {
+    _moveDesired.normalize();
+    _moveTemp
+      .copy(_moveForward)
+      .multiplyScalar(-_moveDesired.z)
+      .addScaledVector(_moveRight, _moveDesired.x)
+      .normalize()
+      .multiplyScalar(planetaryMotion.moveSpeedMps);
+
+    _moveTangent.copy(planetaryMotion.velocity).projectOnPlane(_moveNormal);
+    _moveTangent.lerp(_moveTemp, Math.min(1, planetaryMotion.moveAccelMps2 * dt / planetaryMotion.moveSpeedMps));
+    planetaryMotion.velocity.copy(_moveTangent);
+  }
+
   planetaryMotion.velocity.addScaledVector(_gravityDir, planetaryMotion.gravityMps2 * dt);
   characterWorld.position.addScaledVector(planetaryMotion.velocity, dt);
 
@@ -379,7 +414,7 @@ function updatePlanetaryCharacterMotion() {
     const radialSpeed = planetaryMotion.velocity.dot(_gravityUp);
     if (radialSpeed < 0) planetaryMotion.velocity.addScaledVector(_gravityUp, -radialSpeed);
     _gravityTangential.copy(planetaryMotion.velocity).projectOnPlane(_gravityUp);
-    planetaryMotion.velocity.copy(_gravityTangential).multiplyScalar(0.98);
+    planetaryMotion.velocity.copy(_gravityTangential).multiplyScalar(_moveDesired.lengthSq() > 0 ? 0.996 : 0.90);
   }
 
   _gravityUp.copy(characterWorld.position).sub(planetaryMotion.center).normalize();
@@ -434,6 +469,13 @@ const _basisNorth = new THREE.Vector3();
 const _basisRef = new THREE.Vector3(0, 1, 0);
 const _basisAltRef = new THREE.Vector3(1, 0, 0);
 const _planetOffset = new THREE.Vector3();
+const _moveForward = new THREE.Vector3();
+const _moveRight = new THREE.Vector3();
+const _moveDesired = new THREE.Vector3();
+const _moveNormal = new THREE.Vector3();
+const _moveForwardLocal = new THREE.Vector3();
+const _moveTangent = new THREE.Vector3();
+const _moveTemp = new THREE.Vector3();
 
 function worldPositionFromCharacterOffset(characterPos, offset) {
   if (!planetaryMotion.enabled) return _planetOffset.copy(characterPos).add(offset);
@@ -606,6 +648,13 @@ async function handleSetTab(tabId) {
    Input
 =========================================================== */
 window.addEventListener("keydown", async (e) => {
+  const moveKey = e.key.toLowerCase();
+  if (moveKey in movementInput) {
+    movementInput[moveKey] = true;
+    e.preventDefault();
+    return;
+  }
+
   if (e.key === "Tab") {
     e.preventDefault();
     uiOpen = !uiOpen;
@@ -651,6 +700,12 @@ window.addEventListener("keydown", async (e) => {
   }
 });
 
+window.addEventListener("keyup", (e) => {
+  const moveKey = e.key.toLowerCase();
+  if (!(moveKey in movementInput)) return;
+  movementInput[moveKey] = false;
+});
+
 /* ===========================================================
    Init
 =========================================================== */
@@ -680,6 +735,9 @@ async function init() {
       present.charPos.copy(spawnPos);
       present.tCharPos.copy(spawnPos);
       enablePlanetaryCharacterMotion({ center: planet.center, surfaceRadius: spawnRadius });
+
+      const cameraDistance = Math.max(4.25, spawnRadius * 0.00002);
+      PRESENT.default.camPos.set(0, 1.6, cameraDistance);
 
       controls.target.copy(spawnPos);
       present.target.copy(spawnPos);
@@ -712,9 +770,13 @@ async function init() {
 function animate() {
   requestAnimationFrame(animate);
 
-  if (uiOpen && appState === "game") {
-    const pTab = PRESENT[activeTab] ?? PRESENT.default;
+  if (appState === "game") {
+    const cameraTab = uiOpen ? activeTab : "default";
+    const pTab = PRESENT[cameraTab] ?? PRESENT.default;
     present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, pTab.camPos));
+    present.tFov = pTab.fov;
+
+    if (planetaryMotion.enabled) updatePlanetaryCharacterMotion();
 
     present.camPos.lerp(present.tCamPos, present.camLerp);
     present.fov = THREE.MathUtils.lerp(present.fov, present.tFov, present.fovLerp);
@@ -729,14 +791,14 @@ function animate() {
     if (!planetaryMotion.enabled) {
       characterWorld.position.copy(present.charPos);
     }
-    updatePlanetaryCharacterMotion();
 
-    const { nx, ny } = desiredCharacterNdcForTab(activeTab);
+    const { nx, ny } = desiredCharacterNdcForTab(cameraTab);
     const aim = computeAimTargetForCharacterNDC(camera.position, characterWorld.position, nx, ny, camera.fov, camera.aspect);
 
     present.tTarget.copy(aim);
     present.target.lerp(present.tTarget, present.targetLerp);
-    controls.target.copy(present.target);
+    if (uiOpen) controls.target.copy(present.target);
+    else controls.target.copy(characterWorld.position);
   } else {
     // Keep a stable default target when not in game
     controls.target.lerp(new THREE.Vector3(0, 1.05, 0), 0.10);
