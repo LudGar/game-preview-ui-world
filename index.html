@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>In-World UI Prototype</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="c"></canvas>
+
+    <!-- Small hint overlay (NOT the UI; UI is in-world). -->
+    <div class="hint">
+      <div><b>TAB</b> toggle UI (in World)</div>
+      <div><b>1..5</b> tabs: Map / Inventory / Character / Cosmetics / Settings</div>
+      <div><b>Mouse</b> click UI elements when UI is open</div>
+    </div>
+  </div>
+
+    <script type="importmap">
+        {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+        }
+    </script>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
