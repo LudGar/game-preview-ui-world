@@ -476,6 +476,7 @@ const _moveNormal = new THREE.Vector3();
 const _moveForwardLocal = new THREE.Vector3();
 const _moveTangent = new THREE.Vector3();
 const _moveTemp = new THREE.Vector3();
+const _aim = new THREE.Vector3();
 
 function worldPositionFromCharacterOffset(characterPos, offset) {
   if (!planetaryMotion.enabled) return _planetOffset.copy(characterPos).add(offset);
