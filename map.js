@@ -97,7 +97,15 @@ function classifyBurg(burg, cityPopThreshold) {
 
 export function buildMapTab(
   panel,
-  { seed, tooltip, db = null, activeSaveId = null, getUiState = null, setUiState = null }
+  {
+    seed,
+    tooltip,
+    db = null,
+    activeSaveId = null,
+    getUiState = null,
+    setUiState = null,
+    onNodeClick = null,
+  }
 ) {
   const tip = tooltip ?? createTooltip();
 
@@ -559,6 +567,7 @@ export function buildMapTab(
         marker.addEventListener("click", (e) => {
           e.stopPropagation();
           setSelected(b);
+          if (typeof onNodeClick === "function") onNodeClick(b);
         });
 
         markersEl.appendChild(marker);

@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-import { openDB, getAllSaves, createSave } from "./db.js";
+import { openDB, getAllSaves, createSave, getUiState, setUiState } from "./db.js";
 
 import { createTooltip } from "./tooltip.js";
 import { buildMapTab } from "./map.js";
@@ -323,6 +323,9 @@ scene.add(sky);
 
 const CHARACTER_DIAMETER_M = 2;
 const CHARACTER_RADIUS_M = CHARACTER_DIAMETER_M / 2;
+const WORLD_WIDTH_KM = 42315;
+const WORLD_HEIGHT_KM = 18855;
+const DEFAULT_KM_PER_PX = 15;
 
 const characterWorld = new THREE.Mesh(
   new THREE.SphereGeometry(CHARACTER_RADIUS_M, 32, 24),
@@ -362,6 +365,34 @@ function enablePlanetaryCharacterMotion({ center, surfaceRadius }) {
   planetaryMotion.surfaceRadius = surfaceRadius;
   planetaryMotion.velocity.set(0, 0, 0);
   planetaryMotion.lastTimeS = performance.now() / 1000;
+}
+
+function getDistanceScaleKmPerPx(world) {
+  const scale = Number(world?.settings?.distanceScale);
+  return Number.isFinite(scale) && scale > 0 ? scale : DEFAULT_KM_PER_PX;
+}
+
+function getWorldSizePxFromKm(world) {
+  const kmPerPx = getDistanceScaleKmPerPx(world);
+  return {
+    width: Math.round(WORLD_WIDTH_KM / kmPerPx),
+    height: Math.round(WORLD_HEIGHT_KM / kmPerPx),
+  };
+}
+
+function mapToSpherePosition(x, y, { width, height, radius, center }) {
+  const u = x / width;
+  const v = y / height;
+
+  const lon = (u - 0.5) * Math.PI * 2;
+  const lat = (0.5 - v) * Math.PI;
+
+  const cosLat = Math.cos(lat);
+  return new THREE.Vector3(
+    center.x + radius * cosLat * Math.cos(lon),
+    center.y + radius * Math.sin(lat),
+    center.z + radius * cosLat * Math.sin(lon)
+  );
 }
 
 function updatePlanetaryCharacterMotion() {
@@ -549,6 +580,7 @@ let activeTab = "map";
 
 let uiCleanup = null;
 let worldCleanup = null;
+let worldMeta = null;
 
 const tooltip = createTooltip();
 
@@ -608,7 +640,35 @@ function renderHtmlPanel() {
   // game tabs
   const seed = activeSaveId ?? "seed";
 
-  if (activeTab === "map")            uiCleanup = buildMapTab      (panel,  { seed, tooltip, db, activeSaveId});
+  if (activeTab === "map") {
+    uiCleanup = buildMapTab(panel, {
+      seed,
+      tooltip,
+      db,
+      activeSaveId,
+      getUiState,
+      setUiState,
+      onNodeClick: (burg) => {
+        if (!planetaryMotion.enabled || !worldMeta) return;
+        if (!Number.isFinite(burg?.x) || !Number.isFinite(burg?.y)) return;
+
+        const nextPos = mapToSpherePosition(burg.x, burg.y, {
+          width: worldMeta.width,
+          height: worldMeta.height,
+          radius: planetaryMotion.surfaceRadius,
+          center: planetaryMotion.center,
+        });
+
+        characterWorld.position.copy(nextPos);
+        planetaryMotion.velocity.set(0, 0, 0);
+        present.charPos.copy(nextPos);
+        present.tCharPos.copy(nextPos);
+        controls.target.copy(nextPos);
+        present.target.copy(nextPos);
+        present.tTarget.copy(nextPos);
+      },
+    });
+  }
   else if (activeTab === "inventory") uiCleanup = buildInventoryTab(panel,  { seed, tooltip, db, activeSaveId});
   else if (activeTab === "character") uiCleanup = buildCharacterTab(panel,  { seed, tooltip, db, activeSaveId});
   else if (activeTab === "cosmetics") uiCleanup = buildCosmeticsTab(panel,  { seed, tooltip, db, activeSaveId});
@@ -724,6 +784,12 @@ async function init() {
     fallbackGrid.visible = false;
 
     const planet = builtWorld?.planet;
+    const loadedWorld = builtWorld?.world;
+    const fallbackSize = getWorldSizePxFromKm(loadedWorld);
+    worldMeta = {
+      width: Number(loadedWorld?.info?.width || fallbackSize.width),
+      height: Number(loadedWorld?.info?.height || fallbackSize.height),
+    };
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
     const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;
 
