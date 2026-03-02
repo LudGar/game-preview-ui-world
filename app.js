@@ -321,11 +321,14 @@ const sky = new THREE.Mesh(
 sky.layers.set(WORLD_LAYER);
 scene.add(sky);
 
+const CHARACTER_DIAMETER_M = 2;
+const CHARACTER_RADIUS_M = CHARACTER_DIAMETER_M / 2;
+
 const characterWorld = new THREE.Mesh(
-  new THREE.SphereGeometry(0.45, 32, 24),
+  new THREE.SphereGeometry(CHARACTER_RADIUS_M, 32, 24),
   new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.55, metalness: 0.15 })
 );
-characterWorld.position.set(0, 0.55, 0);
+characterWorld.position.set(0, CHARACTER_RADIUS_M, 0);
 characterWorld.layers.set(WORLD_LAYER);
 scene.add(characterWorld);
 
@@ -334,16 +337,67 @@ characterUi.layers.set(UI_CHAR_LAYER);
 characterUi.visible = false;
 scene.add(characterUi);
 
+const planetaryMotion = {
+  enabled: false,
+  center: new THREE.Vector3(0, 0, 0),
+  surfaceRadius: 1,
+  gravityMps2: 18,
+  velocity: new THREE.Vector3(),
+  lastTimeS: performance.now() / 1000,
+};
+
+const _gravityUp = new THREE.Vector3();
+const _gravityDir = new THREE.Vector3();
+const _gravityTangential = new THREE.Vector3();
+const _gravityQuat = new THREE.Quaternion();
+const _gravityRef = new THREE.Vector3(0, 1, 0);
+
+function enablePlanetaryCharacterMotion({ center, surfaceRadius }) {
+  planetaryMotion.enabled = true;
+  planetaryMotion.center.copy(center);
+  planetaryMotion.surfaceRadius = surfaceRadius;
+  planetaryMotion.velocity.set(0, 0, 0);
+  planetaryMotion.lastTimeS = performance.now() / 1000;
+}
+
+function updatePlanetaryCharacterMotion() {
+  if (!planetaryMotion.enabled) return;
+
+  const nowS = performance.now() / 1000;
+  const dt = Math.min(0.05, Math.max(0.001, nowS - planetaryMotion.lastTimeS));
+  planetaryMotion.lastTimeS = nowS;
+
+  _gravityDir.copy(planetaryMotion.center).sub(characterWorld.position).normalize();
+  planetaryMotion.velocity.addScaledVector(_gravityDir, planetaryMotion.gravityMps2 * dt);
+  characterWorld.position.addScaledVector(planetaryMotion.velocity, dt);
+
+  _gravityUp.copy(characterWorld.position).sub(planetaryMotion.center).normalize();
+  const currentRadius = characterWorld.position.distanceTo(planetaryMotion.center);
+  if (currentRadius < planetaryMotion.surfaceRadius) {
+    characterWorld.position.copy(_gravityUp.multiplyScalar(planetaryMotion.surfaceRadius).add(planetaryMotion.center));
+
+    const radialSpeed = planetaryMotion.velocity.dot(_gravityUp);
+    if (radialSpeed < 0) planetaryMotion.velocity.addScaledVector(_gravityUp, -radialSpeed);
+    _gravityTangential.copy(planetaryMotion.velocity).projectOnPlane(_gravityUp);
+    planetaryMotion.velocity.copy(_gravityTangential).multiplyScalar(0.98);
+  }
+
+  _gravityUp.copy(characterWorld.position).sub(planetaryMotion.center).normalize();
+  _gravityQuat.setFromUnitVectors(_up, _gravityUp);
+  characterWorld.quaternion.copy(_gravityQuat);
+}
+
+
 /* ===========================================================
    Camera staging per tab
 =========================================================== */
 const PRESENT = {
-  default:  { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, 0.55, 0.0) },
-  map:      { camPos: new THREE.Vector3(0.0, 14.0, 10.0), fov: 50, charPos: new THREE.Vector3(0.0, 0.55, 0.0) },
-  inventory:{ camPos: new THREE.Vector3(0.25, 1.55, 4.05), fov: 58, charPos: new THREE.Vector3(0.0, 0.55, 0.0) },
-  character:{ camPos: new THREE.Vector3(1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, 0.55, 0.0) },
-  cosmetics:{ camPos: new THREE.Vector3(-1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, 0.55, 0.0) },
-  settings: { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, 0.55, 0.0) },
+  default:  { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
+  map:      { camPos: new THREE.Vector3(0.0, 14.0, 10.0), fov: 50, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
+  inventory:{ camPos: new THREE.Vector3(0.25, 1.55, 4.05), fov: 58, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
+  character:{ camPos: new THREE.Vector3(1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
+  cosmetics:{ camPos: new THREE.Vector3(-1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
+  settings: { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
 };
 
 const present = {
@@ -363,9 +417,9 @@ const present = {
 
 function applyPresentationForTab(tabId) {
   const p = PRESENT[tabId] ?? PRESENT.default;
-  present.tCamPos.copy(p.camPos);
+  present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, p.camPos));
   present.tFov = p.fov;
-  present.tCharPos.copy(p.charPos);
+  if (!planetaryMotion.enabled) present.tCharPos.copy(p.charPos);
 }
 
 const _up = new THREE.Vector3(0, 1, 0);
@@ -374,7 +428,28 @@ const _right = new THREE.Vector3();
 const _camUp = new THREE.Vector3();
 const _toChar = new THREE.Vector3();
 const _offset = new THREE.Vector3();
-const _aim = new THREE.Vector3();
+const _basisUp = new THREE.Vector3();
+const _basisEast = new THREE.Vector3();
+const _basisNorth = new THREE.Vector3();
+const _basisRef = new THREE.Vector3(0, 1, 0);
+const _basisAltRef = new THREE.Vector3(1, 0, 0);
+const _planetOffset = new THREE.Vector3();
+
+function worldPositionFromCharacterOffset(characterPos, offset) {
+  if (!planetaryMotion.enabled) return _planetOffset.copy(characterPos).add(offset);
+
+  _basisUp.copy(characterPos).sub(planetaryMotion.center).normalize();
+  _basisEast.crossVectors(_basisRef, _basisUp);
+  if (_basisEast.lengthSq() < 1e-6) _basisEast.crossVectors(_basisAltRef, _basisUp);
+  _basisEast.normalize();
+  _basisNorth.crossVectors(_basisUp, _basisEast).normalize();
+
+  return _planetOffset
+    .copy(characterPos)
+    .addScaledVector(_basisEast, offset.x)
+    .addScaledVector(_basisUp, offset.y)
+    .addScaledVector(_basisNorth, offset.z);
+}
 
 function computeAimTargetForCharacterNDC(camPos, charPos, nx, ny, fovDeg, aspect) {
   _forward.copy(charPos).sub(camPos).normalize();
@@ -591,6 +666,25 @@ async function init() {
     worldCleanup = builtWorld.cleanup;
     fallbackGround.visible = false;
     fallbackGrid.visible = false;
+
+    const planet = builtWorld?.planet;
+    const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
+    const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;
+
+    if (planet && spawn?.position) {
+      _gravityUp.copy(spawn.position).sub(planet.center).normalize();
+      const spawnRadius = planet.oceanRadius + CHARACTER_RADIUS_M;
+      const spawnPos = planet.center.clone().addScaledVector(_gravityUp, spawnRadius);
+
+      characterWorld.position.copy(spawnPos);
+      present.charPos.copy(spawnPos);
+      present.tCharPos.copy(spawnPos);
+      enablePlanetaryCharacterMotion({ center: planet.center, surfaceRadius: spawnRadius });
+
+      controls.target.copy(spawnPos);
+      present.target.copy(spawnPos);
+      present.tTarget.copy(spawnPos);
+    }
   } catch (err) {
     console.warn("[App] World build failed; using fallback plane/grid.", err);
     fallbackGround.visible = true;
@@ -619,6 +713,9 @@ function animate() {
   requestAnimationFrame(animate);
 
   if (uiOpen && appState === "game") {
+    const pTab = PRESENT[activeTab] ?? PRESENT.default;
+    present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, pTab.camPos));
+
     present.camPos.lerp(present.tCamPos, present.camLerp);
     present.fov = THREE.MathUtils.lerp(present.fov, present.tFov, present.fovLerp);
     present.charPos.lerp(present.tCharPos, present.charLerp);
@@ -629,7 +726,10 @@ function animate() {
       camera.updateProjectionMatrix();
     }
 
-    characterWorld.position.copy(present.charPos);
+    if (!planetaryMotion.enabled) {
+      characterWorld.position.copy(present.charPos);
+    }
+    updatePlanetaryCharacterMotion();
 
     const { nx, ny } = desiredCharacterNdcForTab(activeTab);
     const aim = computeAimTargetForCharacterNDC(camera.position, characterWorld.position, nx, ny, camera.fov, camera.aspect);
@@ -641,6 +741,8 @@ function animate() {
     // Keep a stable default target when not in game
     controls.target.lerp(new THREE.Vector3(0, 1.05, 0), 0.10);
   }
+
+  present.charPos.copy(characterWorld.position);
 
   if (characterUi.visible) {
     characterUi.position.copy(characterWorld.position);
