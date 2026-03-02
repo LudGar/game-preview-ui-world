@@ -10,6 +10,7 @@ import { buildInventoryTab } from "./inventory.js";
 import { buildCharacterTab } from "./character.js";
 import { buildCosmeticsTab } from "./cosmetics.js";
 import { buildSettingsTab } from "./settings.js";
+import { buildWorldFromAzgaar } from "./world-builder.js";
 
 /* ===========================================================
    Tabs
@@ -300,18 +301,18 @@ scene.add(dir);
 hemi.layers.set(WORLD_LAYER);
 dir.layers.set(WORLD_LAYER);
 
-const ground = new THREE.Mesh(
+const fallbackGround = new THREE.Mesh(
   new THREE.PlaneGeometry(80, 80),
   new THREE.MeshStandardMaterial({ color: 0x0b0f16, roughness: 1 })
 );
-ground.rotation.x = -Math.PI / 2;
-ground.layers.set(WORLD_LAYER);
-scene.add(ground);
+fallbackGround.rotation.x = -Math.PI / 2;
+fallbackGround.layers.set(WORLD_LAYER);
+scene.add(fallbackGround);
 
-const grid = new THREE.GridHelper(80, 80, 0xffffff, 0x5a6b7a);
-grid.position.y = 0.001;
-grid.layers.set(WORLD_LAYER);
-scene.add(grid);
+const fallbackGrid = new THREE.GridHelper(80, 80, 0xffffff, 0x5a6b7a);
+fallbackGrid.position.y = 0.001;
+fallbackGrid.layers.set(WORLD_LAYER);
+scene.add(fallbackGrid);
 
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(120, 32, 16),
@@ -429,6 +430,7 @@ let appState = "mainMenu"; // "mainMenu" | "saveFiles" | "game"
 let activeTab = "map";
 
 let uiCleanup = null;
+let worldCleanup = null;
 
 const tooltip = createTooltip();
 
@@ -579,6 +581,22 @@ window.addEventListener("keydown", async (e) => {
 =========================================================== */
 async function init() {
   db = await openDB();
+
+  try {
+    const builtWorld = await buildWorldFromAzgaar({
+      scene,
+      url: "./afmg/Praneland Full 2025-12-28-23-09.json",
+      layer: WORLD_LAYER,
+    });
+    worldCleanup = builtWorld.cleanup;
+    fallbackGround.visible = false;
+    fallbackGrid.visible = false;
+  } catch (err) {
+    console.warn("[App] World build failed; using fallback plane/grid.", err);
+    fallbackGround.visible = true;
+    fallbackGrid.visible = true;
+  }
+
   let saves = await getAllSaves(db);
   if (!saves.length) {
     await createSave(db, "Character 0001");
