@@ -1,5 +1,22 @@
 import * as THREE from "three";
 
+const WORLD_WIDTH_KM = 42315;
+const WORLD_HEIGHT_KM = 18855;
+const DEFAULT_KM_PER_PX = 15;
+
+function getDistanceScaleKmPerPx(world) {
+  const scale = Number(world?.settings?.distanceScale);
+  return Number.isFinite(scale) && scale > 0 ? scale : DEFAULT_KM_PER_PX;
+}
+
+function getWorldSizePxFromKm(world) {
+  const kmPerPx = getDistanceScaleKmPerPx(world);
+  return {
+    width: Math.round(WORLD_WIDTH_KM / kmPerPx),
+    height: Math.round(WORLD_HEIGHT_KM / kmPerPx),
+  };
+}
+
 function mapToSphere(x, y, { width, height, radius, center }) {
   const u = x / width;
   const v = y / height;
@@ -70,9 +87,11 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const cells = Array.isArray(pack?.cells) ? pack.cells : [];
   const burgs = Array.isArray(pack?.burgs) ? pack.burgs : [];
 
+  const fallbackSize = getWorldSizePxFromKm(world);
+
   const info = {
-    width: Number(world?.info?.width || 1400),
-    height: Number(world?.info?.height || 900),
+    width: Number(world?.info?.width || fallbackSize.width),
+    height: Number(world?.info?.height || fallbackSize.height),
     radius: 12,
     center: new THREE.Vector3(0, -12.5, 0),
   };
@@ -94,6 +113,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const coastGroup = new THREE.Group();
   const cellGroup = new THREE.Group();
   const burgGroup = new THREE.Group();
+  const settlementPositions = [];
 
   const landMat = new THREE.MeshStandardMaterial({ color: 0x2a5a2f, roughness: 0.96, metalness: 0.03 });
   const coastMat = new THREE.LineBasicMaterial({ color: 0xc8e5cf, transparent: true, opacity: 0.7 });
@@ -144,6 +164,12 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
     const marker = new THREE.Mesh(markerGeo, mat);
     marker.position.copy(base);
+    settlementPositions.push({
+      name: b.name || "Settlement",
+      isCapital: !!b.capital,
+      population: pop,
+      position: base.clone(),
+    });
     burgGroup.add(marker);
   }
 
@@ -155,6 +181,12 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
   return {
     world,
+    planet: {
+      center: info.center.clone(),
+      oceanRadius: info.radius,
+      settlementAltitude: 0.2,
+    },
+    settlementPositions,
     cleanup() {
       scene.remove(worldRoot);
       worldRoot.traverse((obj) => {

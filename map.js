@@ -11,6 +11,23 @@ function htmlEscape(s) {
 }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
+const WORLD_WIDTH_KM = 42315;
+const WORLD_HEIGHT_KM = 18855;
+const DEFAULT_KM_PER_PX = 15;
+
+function getDistanceScaleKmPerPx(world) {
+  const scale = Number(world?.settings?.distanceScale);
+  return Number.isFinite(scale) && scale > 0 ? scale : DEFAULT_KM_PER_PX;
+}
+
+function getWorldSizePxFromKm(world) {
+  const kmPerPx = getDistanceScaleKmPerPx(world);
+  return {
+    width: Math.round(WORLD_WIDTH_KM / kmPerPx),
+    height: Math.round(WORLD_HEIGHT_KM / kmPerPx),
+  };
+}
+
 function cityTooltipHtml(burg, stateName = null, cultureName = null) {
   const name = burg?.name ?? "Settlement";
   const type = burg?.capital ? "Capital" : (burg?.type ?? "Settlement");
@@ -45,8 +62,9 @@ function outlineSvgFromWorld(world) {
   const pack = world?.pack;
   const features = pack?.features;
   const vertices = pack?.vertices;
-  const w = world?.info?.width || 1400;
-  const h = world?.info?.height || 900;
+  const fallbackSize = getWorldSizePxFromKm(world);
+  const w = world?.info?.width || fallbackSize.width;
+  const h = world?.info?.height || fallbackSize.height;
 
   if (!pack || !Array.isArray(features) || !Array.isArray(vertices)) {
     return `<svg viewBox="0 0 ${w} ${h}" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none;"></svg>`;
@@ -102,7 +120,7 @@ export function buildMapTab(
         <div id="mapViewport" style="position:absolute; inset:0; cursor:grab; background:rgba(5,7,10,0.6);">
           <div id="mapCanvas" style="
             position:absolute; left:50%; top:50%;
-            width:1400px; height:900px;
+            width:${getWorldSizePxFromKm(null).width}px; height:${getWorldSizePxFromKm(null).height}px;
             transform:translate(-50%,-50%);
             border:1px solid rgba(255,255,255,0.10);
             border-radius:14px;
@@ -455,8 +473,9 @@ export function buildMapTab(
       const burgs = Array.isArray(pack?.burgs) ? pack.burgs : [];
 
       // Resize canvas
-      const w = info.width || 1400;
-      const h = info.height || 900;
+      const fallbackSize = getWorldSizePxFromKm(world);
+      const w = info.width || fallbackSize.width;
+      const h = info.height || fallbackSize.height;
       mapCanvas.style.width = `${w}px`;
       mapCanvas.style.height = `${h}px`;
 
