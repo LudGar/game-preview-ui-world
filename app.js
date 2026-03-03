@@ -286,8 +286,8 @@ controls.enableDamping = true;
 controls.target.set(0, 1.05, 0);
 controls.minDistance = 1.2;
 controls.maxDistance = 100;
-controls.minPolarAngle = 0.15;
-controls.maxPolarAngle = Math.PI - 0.20;
+controls.minPolarAngle = 0.03;
+controls.maxPolarAngle = Math.PI / 2 - 0.03;
 controls.enablePan = true;
 controls.screenSpacePanning = false;
 controls.update();
@@ -313,6 +313,23 @@ const fallbackGrid = new THREE.GridHelper(80, 80, 0xffffff, 0x5a6b7a);
 fallbackGrid.position.y = 0.001;
 fallbackGrid.layers.set(WORLD_LAYER);
 scene.add(fallbackGrid);
+
+let worldGrid = null;
+
+function mountWorldGrid(worldWidth, worldHeight) {
+  if (worldGrid) {
+    scene.remove(worldGrid);
+    worldGrid.geometry.dispose?.();
+    worldGrid.material.dispose?.();
+  }
+
+  const span = Math.max(worldWidth, worldHeight);
+  const divisions = THREE.MathUtils.clamp(Math.round(span / 150000), 40, 240);
+  worldGrid = new THREE.GridHelper(span, divisions, 0xf4f8ff, 0x5c6d80);
+  worldGrid.position.y = 0.02;
+  worldGrid.layers.set(WORLD_LAYER);
+  scene.add(worldGrid);
+}
 
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(120, 32, 16),
@@ -351,6 +368,48 @@ const planarMotion = {
 };
 
 const movementInput = { w: false, a: false, s: false, d: false };
+
+function ensureMotionHud() {
+  let hud = document.getElementById("motionHud");
+  if (hud) return hud;
+
+  hud = document.createElement("div");
+  hud.id = "motionHud";
+  hud.style.position = "fixed";
+  hud.style.right = "14px";
+  hud.style.bottom = "14px";
+  hud.style.padding = "10px 12px";
+  hud.style.borderRadius = "12px";
+  hud.style.background = "rgba(0,0,0,0.38)";
+  hud.style.border = "1px solid rgba(255,255,255,0.14)";
+  hud.style.color = "rgba(255,255,255,0.95)";
+  hud.style.font = "700 12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+  hud.style.letterSpacing = "0.03em";
+  hud.style.zIndex = "9600";
+  hud.style.pointerEvents = "none";
+  hud.style.minWidth = "126px";
+  hud.style.textAlign = "right";
+  document.body.appendChild(hud);
+  return hud;
+}
+
+const motionHud = ensureMotionHud();
+
+function isMovementKeyActive() {
+  return movementInput.w || movementInput.a || movementInput.s || movementInput.d;
+}
+
+function updateMotionHud() {
+  const speedMps = planarMotion.enabled ? planarMotion.velocity.length() : 0;
+  const active = isMovementKeyActive();
+  if (active || speedMps > 0.03) {
+    motionHud.style.opacity = "1";
+    motionHud.textContent = `Speed ${speedMps.toFixed(2)} m/s`;
+  } else {
+    motionHud.style.opacity = "0.35";
+    motionHud.textContent = "Speed 0.00 m/s";
+  }
+}
 
 function enablePlanarCharacterMotion({ worldWidth, worldHeight, clampPosition, updateLod }) {
   planarMotion.enabled = true;
@@ -510,6 +569,7 @@ function setUiMode(isOpen) {
   setOverlayLightingEnabled(isOpen);
   overlayCanvas.style.opacity = isOpen ? "1" : "0";
   overlayCanvas.style.transition = "opacity 160ms ease";
+  motionHud.style.display = isOpen || appState !== "game" ? "none" : "block";
 }
 
 /* ===========================================================
@@ -675,7 +735,10 @@ window.addEventListener("keydown", async (e) => {
     controls.enabled = !uiOpen;
 
     if (uiOpen) applyPresentationForTab(appState === "game" ? activeTab : "default");
-    else applyPresentationForTab("default");
+    else {
+      applyPresentationForTab("default");
+      controls.target.copy(characterWorld.position);
+    }
 
     setUiMode(uiOpen);
     renderHtmlPanel();
@@ -747,6 +810,7 @@ async function init() {
     const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;
 
     if (worldPlane && spawn?.position) {
+      mountWorldGrid(worldPlane.widthMeters, worldPlane.heightMeters);
       const spawnPos = spawn.position.clone();
       spawnPos.y = CHARACTER_CENTER_Y_M;
       worldClampPlanePosition?.(spawnPos);
@@ -768,6 +832,7 @@ async function init() {
 
       const worldMaxSpan = Math.max(worldPlane.widthMeters, worldPlane.heightMeters);
       controls.maxDistance = Math.max(200, worldMaxSpan * 0.3);
+      controls.maxPolarAngle = Math.PI / 2 - 0.02;
 
       controls.target.copy(spawnPos);
       present.target.copy(spawnPos);
@@ -777,6 +842,7 @@ async function init() {
     console.warn("[App] World build failed; using fallback plane/grid.", err);
     fallbackGround.visible = true;
     fallbackGrid.visible = true;
+    motionHud.style.display = "none";
   }
 
   let saves = await getAllSaves(db);
@@ -814,16 +880,18 @@ function animate() {
     }
 
     const pTab = PRESENT[cameraTab] ?? PRESENT.default;
-    present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, pTab.camPos));
+    if (uiOpen) {
+      present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, pTab.camPos));
+    }
     present.tFov = pTab.fov;
 
     if (planarMotion.enabled) updatePlanarCharacterMotion();
 
-    present.camPos.lerp(present.tCamPos, present.camLerp);
+    if (uiOpen) present.camPos.lerp(present.tCamPos, present.camLerp);
     present.fov = THREE.MathUtils.lerp(present.fov, present.tFov, present.fovLerp);
     present.charPos.lerp(present.tCharPos, present.charLerp);
 
-    camera.position.copy(present.camPos);
+    if (uiOpen) camera.position.copy(present.camPos);
     if (Math.abs(camera.fov - present.fov) > 0.001) {
       camera.fov = present.fov;
       camera.updateProjectionMatrix();
@@ -839,11 +907,17 @@ function animate() {
     present.tTarget.copy(aim);
     present.target.lerp(present.tTarget, present.targetLerp);
     if (uiOpen) controls.target.copy(present.target);
-    else controls.target.copy(characterWorld.position);
+    else {
+      controls.target.copy(characterWorld.position);
+      controls.maxPolarAngle = Math.PI / 2 - 0.02;
+      controls.minDistance = 4;
+    }
   } else {
     // Keep a stable default target when not in game
     controls.target.lerp(new THREE.Vector3(0, 1.05, 0), 0.10);
   }
+
+  updateMotionHud();
 
   present.charPos.copy(characterWorld.position);
 
