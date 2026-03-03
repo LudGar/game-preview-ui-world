@@ -18,30 +18,6 @@ function getWorldSizePxFromKm(world) {
   };
 }
 
-function mapToSphere(x, y, { width, height, radius, center }) {
-  const u = x / width;
-  const v = y / height;
-
-  const lon = (u - 0.5) * Math.PI * 2;
-  const lat = (0.5 - v) * Math.PI;
-
-  const cosLat = Math.cos(lat);
-  const px = center.x + radius * cosLat * Math.cos(lon);
-  const py = center.y + radius * Math.sin(lat);
-  const pz = center.z + radius * cosLat * Math.sin(lon);
-  return new THREE.Vector3(px, py, pz);
-}
-
-function polygonPointsFromFeature(feature, vertices) {
-  const points = [];
-  for (const vi of feature.vertices || []) {
-    const p = vertices?.[vi]?.p;
-    if (!Array.isArray(p) || p.length < 2) continue;
-    points.push(new THREE.Vector2(p[0], p[1]));
-  }
-  return points.length >= 3 ? points : null;
-}
-
 function polygonPointsFromCell(cell, vertices) {
   const points = [];
   for (const vi of cell.v || []) {
@@ -52,29 +28,61 @@ function polygonPointsFromCell(cell, vertices) {
   return points.length >= 3 ? points : null;
 }
 
-function buildSphericalLandGeometry(points2D, info, elevation = 0.08) {
-  const triangles = THREE.ShapeUtils.triangulateShape(points2D, []);
-  if (!triangles.length) return null;
-
-  const radius = info.radius + elevation;
-  const positions = [];
-  const normals = [];
-
-  for (const tri of triangles) {
-    for (const idx of tri) {
-      const p = points2D[idx];
-      const v = mapToSphere(p.x, p.y, { ...info, radius });
-      positions.push(v.x, v.y, v.z);
-
-      const n = v.clone().sub(info.center).normalize();
-      normals.push(n.x, n.y, n.z);
-    }
+function computeBbox(points) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
   }
+  return { minX, minY, maxX, maxY };
+}
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  return geo;
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  const { x, y } = point;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+
+    const intersect =
+      yi > y !== yj > y &&
+      x < ((xj - xi) * (y - yi)) / (yj - yi + Number.EPSILON) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function makeMapSpaceConverters({ widthPx, heightPx, widthMeters, heightMeters }) {
+  const halfWidth = widthMeters / 2;
+  const halfHeight = heightMeters / 2;
+
+  return {
+    mapToPlane(x, y) {
+      const px = (x / widthPx - 0.5) * widthMeters;
+      const pz = (0.5 - y / heightPx) * heightMeters;
+      return new THREE.Vector3(px, 0, pz);
+    },
+    planeToMap(x, z) {
+      const mapX = ((x + halfWidth) / widthMeters) * widthPx;
+      const mapY = ((halfHeight - z) / heightMeters) * heightPx;
+      return {
+        x: THREE.MathUtils.clamp(mapX, 0, widthPx),
+        y: THREE.MathUtils.clamp(mapY, 0, heightPx),
+      };
+    },
+    clampPlanePosition(v) {
+      v.x = THREE.MathUtils.clamp(v.x, -halfWidth, halfWidth);
+      v.z = THREE.MathUtils.clamp(v.z, -halfHeight, halfHeight);
+      return v;
+    },
+  };
 }
 
 export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
@@ -83,117 +91,229 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
   const world = await res.json();
   const pack = world?.pack;
-  const features = Array.isArray(pack?.features) ? pack.features : [];
   const vertices = Array.isArray(pack?.vertices) ? pack.vertices : [];
   const cells = Array.isArray(pack?.cells) ? pack.cells : [];
   const burgs = Array.isArray(pack?.burgs) ? pack.burgs : [];
 
   const fallbackSize = getWorldSizePxFromKm(world);
-
-  const info = {
-    width: Number(world?.info?.width || fallbackSize.width),
-    height: Number(world?.info?.height || fallbackSize.height),
-    radius: 12,
-    center: new THREE.Vector3(0, 0, 0),
-  };
+  const widthPx = Number(world?.info?.width || fallbackSize.width);
+  const heightPx = Number(world?.info?.height || fallbackSize.height);
 
   const kmPerPx = getDistanceScaleKmPerPx(world);
-  const mapWidthMeters = info.width * kmPerPx * METERS_PER_KM;
-  info.radius = mapWidthMeters / (Math.PI * 2);
+  const metersPerPx = kmPerPx * METERS_PER_KM;
+  const mapWidthMeters = widthPx * metersPerPx;
+  const mapHeightMeters = heightPx * metersPerPx;
+
+  const converters = makeMapSpaceConverters({
+    widthPx,
+    heightPx,
+    widthMeters: mapWidthMeters,
+    heightMeters: mapHeightMeters,
+  });
 
   const worldRoot = new THREE.Group();
   worldRoot.name = "generatedWorld";
   worldRoot.layers.set(layer);
 
-  const oceanMat = new THREE.MeshStandardMaterial({
-    color: 0x0b1d36,
-    roughness: 0.9,
-    metalness: 0.05,
-  });
-  const ocean = new THREE.Mesh(new THREE.SphereGeometry(info.radius, 96, 64), oceanMat);
-  ocean.position.copy(info.center);
+  const ocean = new THREE.Mesh(
+    new THREE.PlaneGeometry(mapWidthMeters, mapHeightMeters, 1, 1),
+    new THREE.MeshStandardMaterial({ color: 0x0b1d36, roughness: 0.92, metalness: 0.04 })
+  );
+  ocean.rotation.x = -Math.PI / 2;
+  ocean.position.y = -2;
   worldRoot.add(ocean);
 
-  const landGroup = new THREE.Group();
-  const coastGroup = new THREE.Group();
-  const cellGroup = new THREE.Group();
-  const burgGroup = new THREE.Group();
-  const settlementPositions = [];
+  const loadedCellGroup = new THREE.Group();
+  worldRoot.add(loadedCellGroup);
 
-  const landMat = new THREE.MeshStandardMaterial({ color: 0x2a5a2f, roughness: 0.96, metalness: 0.03 });
-  const coastMat = new THREE.LineBasicMaterial({ color: 0xc8e5cf, transparent: true, opacity: 0.7 });
-  const cellLandMat = new THREE.LineBasicMaterial({ color: 0x91b29a, transparent: true, opacity: 0.25 });
-  const cellWaterMat = new THREE.LineBasicMaterial({ color: 0x6ea9d3, transparent: true, opacity: 0.12 });
+  const cellData = [];
 
-  const landFeatures = features
-    .filter((f) => f?.land && Array.isArray(f?.vertices) && f.vertices.length > 2)
-    .slice(0, 320);
-
-  for (const f of landFeatures) {
-    const points2D = polygonPointsFromFeature(f, vertices);
-    if (!points2D) continue;
-
-    const landGeo = buildSphericalLandGeometry(points2D, info, 350);
-    if (!landGeo) continue;
-    landGroup.add(new THREE.Mesh(landGeo, landMat));
-
-    const coastPoints = points2D.map((p) => mapToSphere(p.x, p.y, { ...info, radius: info.radius + 450 }));
-    const coastGeo = new THREE.BufferGeometry().setFromPoints(coastPoints);
-    coastGroup.add(new THREE.LineLoop(coastGeo, coastMat));
-  }
-
-  for (const cell of cells) {
+  for (let idx = 0; idx < cells.length; idx += 1) {
+    const cell = cells[idx];
     if (!cell || !Array.isArray(cell.v) || cell.v.length < 3) continue;
 
-    const points2D = polygonPointsFromCell(cell, vertices);
-    if (!points2D) continue;
+    const mapPolygon = polygonPointsFromCell(cell, vertices);
+    if (!mapPolygon) continue;
 
-    const elev = Number(cell.h || 0) > 19 ? 420 : 180;
-    const cellPoints = points2D.map((p) => mapToSphere(p.x, p.y, { ...info, radius: info.radius + elev }));
-    const cellGeo = new THREE.BufferGeometry().setFromPoints(cellPoints);
-    const cellIsLand = Number(cell.h || 0) > 19;
-    cellGroup.add(new THREE.LineLoop(cellGeo, cellIsLand ? cellLandMat : cellWaterMat));
+    const planePolygon = mapPolygon.map((p) => {
+      const plane = converters.mapToPlane(p.x, p.y);
+      return new THREE.Vector2(plane.x, plane.z);
+    });
+
+    const center = converters.mapToPlane(Number(cell.p?.[0] || mapPolygon[0].x), Number(cell.p?.[1] || mapPolygon[0].y));
+
+    cellData[idx] = {
+      index: idx,
+      mapPolygon,
+      planePolygon,
+      bbox: computeBbox(mapPolygon),
+      neighbors: Array.isArray(cell.c) ? cell.c.filter((c) => Number.isInteger(c) && c >= 0) : [],
+      isLand: Number(cell.h || 0) > 19,
+      center,
+    };
   }
 
-  const capitalMat = new THREE.MeshStandardMaterial({ color: 0xffcf66, emissive: 0x442200, emissiveIntensity: 0.25 });
-  const cityMat = new THREE.MeshStandardMaterial({ color: 0xa8d8ff });
-  const townMat = new THREE.MeshStandardMaterial({ color: 0xb6c8a8 });
-
-  const markerGeo = new THREE.CircleGeometry(700, 24);
-  const markerUp = new THREE.Vector3();
+  const settlementByCell = new Map();
+  const settlementPositions = [];
   for (const b of burgs) {
     if (!b || b.removed || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+    const cellIndex = Number.isInteger(b.cell) ? b.cell : null;
+    if (cellIndex == null || cellIndex < 0) continue;
 
-    const pop = Number(b.population || 0);
-    const mat = b.capital ? capitalMat : pop >= 5 ? cityMat : townMat;
-    const base = mapToSphere(b.x, b.y, { ...info, radius: info.radius + 600 });
+    const list = settlementByCell.get(cellIndex) || [];
+    list.push(b);
+    settlementByCell.set(cellIndex, list);
 
-    const marker = new THREE.Mesh(markerGeo, mat);
-    marker.position.copy(base);
-    markerUp.copy(base).sub(info.center).normalize();
-    marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), markerUp);
+    const pos = converters.mapToPlane(b.x, b.y);
     settlementPositions.push({
       name: b.name || "Settlement",
       isCapital: !!b.capital,
-      population: pop,
-      position: base.clone(),
+      population: Number(b.population || 0),
+      position: new THREE.Vector3(pos.x, 0, pos.z),
     });
-    burgGroup.add(marker);
   }
 
-  worldRoot.add(landGroup);
-  worldRoot.add(cellGroup);
-  worldRoot.add(coastGroup);
-  worldRoot.add(burgGroup);
+  const markerGeo = new THREE.SphereGeometry(1000, 12, 12);
+  const mats = {
+    capital: new THREE.MeshStandardMaterial({ color: 0xffcf66, emissive: 0x442200, emissiveIntensity: 0.25 }),
+    city: new THREE.MeshStandardMaterial({ color: 0xa8d8ff }),
+    town: new THREE.MeshStandardMaterial({ color: 0xb6c8a8 }),
+  };
+
+  function createCellVisual(cellIndex) {
+    const data = cellData[cellIndex];
+    if (!data) return null;
+
+    const shape = new THREE.Shape(data.planePolygon);
+    const geo = new THREE.ShapeGeometry(shape);
+    geo.rotateX(-Math.PI / 2);
+
+    const fill = new THREE.Mesh(
+      geo,
+      new THREE.MeshStandardMaterial({
+        color: data.isLand ? 0x2a5a2f : 0x18436a,
+        transparent: true,
+        opacity: data.isLand ? 0.96 : 0.72,
+        roughness: 0.95,
+        metalness: 0.02,
+      })
+    );
+    fill.position.y = data.isLand ? 1.6 : 0.8;
+
+    const ringPoints = data.planePolygon.map((p) => new THREE.Vector3(p.x, data.isLand ? 2.4 : 1.4, p.y));
+    const border = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(ringPoints),
+      new THREE.LineBasicMaterial({ color: data.isLand ? 0xc8e5cf : 0x6ea9d3, transparent: true, opacity: 0.55 })
+    );
+
+    const node = new THREE.Group();
+    node.add(fill);
+    node.add(border);
+
+    const localBurgs = settlementByCell.get(cellIndex) || [];
+    for (const b of localBurgs) {
+      const pop = Number(b.population || 0);
+      const mat = b.capital ? mats.capital : pop >= 5 ? mats.city : mats.town;
+      const pos = converters.mapToPlane(b.x, b.y);
+      const marker = new THREE.Mesh(markerGeo, mat);
+      marker.position.set(pos.x, 1200, pos.z);
+      node.add(marker);
+    }
+
+    return { node, geometry: geo, borderGeometry: border.geometry };
+  }
+
+  let activeCellIndex = -1;
+  const mountedCells = new Map();
+
+  function unmountCell(cellIndex) {
+    const mounted = mountedCells.get(cellIndex);
+    if (!mounted) return;
+    loadedCellGroup.remove(mounted.node);
+    mounted.node.traverse((obj) => {
+      if (obj.geometry && obj.geometry !== markerGeo) obj.geometry.dispose?.();
+      if (obj.material) {
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose?.());
+        else if (obj.material !== mats.capital && obj.material !== mats.city && obj.material !== mats.town) obj.material.dispose?.();
+      }
+    });
+    mountedCells.delete(cellIndex);
+  }
+
+  function mountCell(cellIndex) {
+    if (mountedCells.has(cellIndex)) return;
+    const visual = createCellVisual(cellIndex);
+    if (!visual) return;
+    loadedCellGroup.add(visual.node);
+    mountedCells.set(cellIndex, visual);
+  }
+
+  function findCellByMapPoint(x, y) {
+    const tryIndices = [];
+    if (activeCellIndex >= 0) {
+      tryIndices.push(activeCellIndex);
+      const active = cellData[activeCellIndex];
+      if (active) tryIndices.push(...active.neighbors);
+    }
+
+    for (const index of tryIndices) {
+      const data = cellData[index];
+      if (!data) continue;
+      if (x < data.bbox.minX || x > data.bbox.maxX || y < data.bbox.minY || y > data.bbox.maxY) continue;
+      if (pointInPolygon({ x, y }, data.mapPolygon)) return index;
+    }
+
+    for (let idx = 0; idx < cellData.length; idx += 1) {
+      const data = cellData[idx];
+      if (!data) continue;
+      if (x < data.bbox.minX || x > data.bbox.maxX || y < data.bbox.minY || y > data.bbox.maxY) continue;
+      if (pointInPolygon({ x, y }, data.mapPolygon)) return idx;
+    }
+
+    return -1;
+  }
+
+  function setActiveCellFromPlanePosition(position) {
+    const map = converters.planeToMap(position.x, position.z);
+    const nextActive = findCellByMapPoint(map.x, map.y);
+    if (nextActive < 0) return;
+
+    if (nextActive === activeCellIndex) return;
+    activeCellIndex = nextActive;
+
+    const nextSet = new Set([nextActive]);
+    const active = cellData[nextActive];
+    if (active) {
+      for (const n of active.neighbors) nextSet.add(n);
+    }
+
+    for (const mountedIndex of [...mountedCells.keys()]) {
+      if (!nextSet.has(mountedIndex)) unmountCell(mountedIndex);
+    }
+
+    for (const idx of nextSet) {
+      mountCell(idx);
+    }
+  }
+
   scene.add(worldRoot);
 
   return {
     world,
-    planet: {
-      center: info.center.clone(),
-      oceanRadius: info.radius,
-      settlementAltitude: 600,
+    worldPlane: {
+      widthMeters: mapWidthMeters,
+      heightMeters: mapHeightMeters,
+      metersPerPx,
     },
+    mapSpace: {
+      width: widthPx,
+      height: heightPx,
+      mapToPlane: converters.mapToPlane,
+      planeToMap: converters.planeToMap,
+      clampPlanePosition: converters.clampPlanePosition,
+    },
+    getActiveCellIndex: () => activeCellIndex,
+    setActiveCellFromPlanePosition,
     settlementPositions,
     cleanup() {
       scene.remove(worldRoot);
@@ -204,6 +324,10 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
           else obj.material.dispose?.();
         }
       });
+      markerGeo.dispose();
+      mats.capital.dispose();
+      mats.city.dispose();
+      mats.town.dispose();
     },
   };
 }
