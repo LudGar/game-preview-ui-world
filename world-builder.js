@@ -142,11 +142,14 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
     const center = converters.mapToPlane(Number(cell.p?.[0] || mapPolygon[0].x), Number(cell.p?.[1] || mapPolygon[0].y));
 
+    const planeBbox = computeBbox(planePolygon);
+
     cellData[idx] = {
       index: idx,
       mapPolygon,
       planePolygon,
       bbox: computeBbox(mapPolygon),
+      planeBbox,
       neighbors: Array.isArray(cell.c) ? cell.c.filter((c) => Number.isInteger(c) && c >= 0) : [],
       isLand: Number(cell.h || 0) > 19,
       center,
@@ -296,6 +299,26 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     }
   }
 
+  function getCellViewForPlanePosition(position) {
+    const map = converters.planeToMap(position.x, position.z);
+    const index = findCellByMapPoint(map.x, map.y);
+    if (index < 0) return null;
+
+    const cell = cellData[index];
+    if (!cell) return null;
+
+    const spanX = Math.max(1, cell.planeBbox.maxX - cell.planeBbox.minX);
+    const spanZ = Math.max(1, cell.planeBbox.maxY - cell.planeBbox.minY);
+
+    return {
+      index,
+      center: cell.center.clone(),
+      spanX,
+      spanZ,
+      radius: Math.hypot(spanX, spanZ) * 0.5,
+    };
+  }
+
   scene.add(worldRoot);
 
   return {
@@ -314,6 +337,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     },
     getActiveCellIndex: () => activeCellIndex,
     setActiveCellFromPlanePosition,
+    getCellViewForPlanePosition,
     settlementPositions,
     cleanup() {
       scene.remove(worldRoot);
