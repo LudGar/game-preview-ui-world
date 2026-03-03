@@ -85,6 +85,31 @@ function makeMapSpaceConverters({ widthPx, heightPx, widthMeters, heightMeters }
   };
 }
 
+function parseBiomePalette(world) {
+  const colors = Array.isArray(world?.biomesData?.color) ? world.biomesData.color : [];
+  const palette = new Map();
+  colors.forEach((hex, index) => {
+    if (typeof hex !== "string") return;
+    const color = new THREE.Color(hex);
+    if (!Number.isFinite(color.r) || !Number.isFinite(color.g) || !Number.isFinite(color.b)) return;
+    palette.set(index, color);
+  });
+  return palette;
+}
+
+function colorForCell({ isLand, biomeColor, elevation }) {
+  const base = biomeColor ? biomeColor.clone() : new THREE.Color(isLand ? 0x2a5a2f : 0x18436a);
+  const normalizedElevation = THREE.MathUtils.clamp((elevation - 18) / 82, 0, 1);
+  const lightenFactor = isLand ? 0.20 + normalizedElevation * 0.35 : 0.12 + normalizedElevation * 0.15;
+  return base.lerp(new THREE.Color(0xffffff), lightenFactor);
+}
+
+function yForCell({ isLand, elevation }) {
+  if (!isLand) return -1.2 + THREE.MathUtils.clamp((elevation - 5) * 0.03, -0.8, 0.3);
+  const normalizedElevation = THREE.MathUtils.clamp((elevation - 20) / 80, 0, 1);
+  return 0.35 + normalizedElevation * 3.2;
+}
+
 export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const res = await fetch(encodeURI(url), { cache: "no-store" });
   if (!res.ok) throw new Error(`[WorldBuilder] Failed to load world JSON: ${res.status}`);
@@ -94,6 +119,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const vertices = Array.isArray(pack?.vertices) ? pack.vertices : [];
   const cells = Array.isArray(pack?.cells) ? pack.cells : [];
   const burgs = Array.isArray(pack?.burgs) ? pack.burgs : [];
+  const biomePalette = parseBiomePalette(world);
 
   const fallbackSize = getWorldSizePxFromKm(world);
   const widthPx = Number(world?.info?.width || fallbackSize.width);
@@ -152,6 +178,8 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       planeBbox,
       neighbors: Array.isArray(cell.c) ? cell.c.filter((c) => Number.isInteger(c) && c >= 0) : [],
       isLand: Number(cell.h || 0) > 19,
+      biome: Number.isInteger(cell.biome) ? cell.biome : -1,
+      elevation: Number(cell.h || 0),
       center,
     };
   }
@@ -194,19 +222,24 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     const fill = new THREE.Mesh(
       geo,
       new THREE.MeshStandardMaterial({
-        color: data.isLand ? 0x2a5a2f : 0x18436a,
+        color: colorForCell({
+          isLand: data.isLand,
+          biomeColor: biomePalette.get(data.biome) || null,
+          elevation: data.elevation,
+        }),
         transparent: true,
-        opacity: data.isLand ? 0.96 : 0.72,
-        roughness: 0.95,
+        opacity: data.isLand ? 0.94 : 0.74,
+        roughness: 0.92,
         metalness: 0.02,
       })
     );
-    fill.position.y = data.isLand ? 1.6 : 0.8;
+    fill.position.y = yForCell(data);
 
-    const ringPoints = data.planePolygon.map((p) => new THREE.Vector3(p.x, data.isLand ? 2.4 : 1.4, p.y));
+    const borderHeight = fill.position.y + (data.isLand ? 0.4 : 0.25);
+    const ringPoints = data.planePolygon.map((p) => new THREE.Vector3(p.x, borderHeight, p.y));
     const border = new THREE.LineLoop(
       new THREE.BufferGeometry().setFromPoints(ringPoints),
-      new THREE.LineBasicMaterial({ color: data.isLand ? 0xc8e5cf : 0x6ea9d3, transparent: true, opacity: 0.55 })
+      new THREE.LineBasicMaterial({ color: data.isLand ? 0xe2f5de : 0x84bddf, transparent: true, opacity: 0.38 })
     );
 
     const node = new THREE.Group();
@@ -227,28 +260,11 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   }
 
   let activeCellIndex = -1;
-  const mountedCells = new Map();
 
-  function unmountCell(cellIndex) {
-    const mounted = mountedCells.get(cellIndex);
-    if (!mounted) return;
-    loadedCellGroup.remove(mounted.node);
-    mounted.node.traverse((obj) => {
-      if (obj.geometry && obj.geometry !== markerGeo) obj.geometry.dispose?.();
-      if (obj.material) {
-        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose?.());
-        else if (obj.material !== mats.capital && obj.material !== mats.city && obj.material !== mats.town) obj.material.dispose?.();
-      }
-    });
-    mountedCells.delete(cellIndex);
-  }
-
-  function mountCell(cellIndex) {
-    if (mountedCells.has(cellIndex)) return;
-    const visual = createCellVisual(cellIndex);
-    if (!visual) return;
+  for (let idx = 0; idx < cellData.length; idx += 1) {
+    const visual = createCellVisual(idx);
+    if (!visual) continue;
     loadedCellGroup.add(visual.node);
-    mountedCells.set(cellIndex, visual);
   }
 
   function findCellByMapPoint(x, y) {
@@ -281,22 +297,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     const nextActive = findCellByMapPoint(map.x, map.y);
     if (nextActive < 0) return;
 
-    if (nextActive === activeCellIndex) return;
     activeCellIndex = nextActive;
-
-    const nextSet = new Set([nextActive]);
-    const active = cellData[nextActive];
-    if (active) {
-      for (const n of active.neighbors) nextSet.add(n);
-    }
-
-    for (const mountedIndex of [...mountedCells.keys()]) {
-      if (!nextSet.has(mountedIndex)) unmountCell(mountedIndex);
-    }
-
-    for (const idx of nextSet) {
-      mountCell(idx);
-    }
   }
 
   function getCellViewForPlanePosition(position) {
