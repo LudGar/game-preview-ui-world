@@ -285,7 +285,7 @@ const controls = new OrbitControls(camera, worldRenderer.domElement);
 controls.enableDamping = true;
 controls.target.set(0, 1.05, 0);
 controls.minDistance = 1.2;
-controls.maxDistance = 12.0;
+controls.maxDistance = 100;
 controls.minPolarAngle = 0.15;
 controls.maxPolarAngle = Math.PI - 0.20;
 controls.enablePan = true;
@@ -323,11 +323,13 @@ scene.add(sky);
 
 const CHARACTER_DIAMETER_M = 2;
 const CHARACTER_RADIUS_M = CHARACTER_DIAMETER_M / 2;
+const CHARACTER_FLOAT_HEIGHT_M = 0.45;
+const CHARACTER_CENTER_Y_M = CHARACTER_RADIUS_M + CHARACTER_FLOAT_HEIGHT_M;
 const characterWorld = new THREE.Mesh(
   new THREE.SphereGeometry(CHARACTER_RADIUS_M, 32, 24),
   new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.55, metalness: 0.15 })
 );
-characterWorld.position.set(0, CHARACTER_RADIUS_M, 0);
+characterWorld.position.set(0, CHARACTER_CENTER_Y_M, 0);
 characterWorld.layers.set(WORLD_LAYER);
 scene.add(characterWorld);
 
@@ -400,7 +402,7 @@ function updatePlanarCharacterMotion() {
 
   planarMotion.velocity.y = 0;
   characterWorld.position.addScaledVector(planarMotion.velocity, dt);
-  characterWorld.position.y = CHARACTER_RADIUS_M;
+  characterWorld.position.y = CHARACTER_CENTER_Y_M;
   if (planarMotion.clampPosition) planarMotion.clampPosition(characterWorld.position);
   else {
     characterWorld.position.x = THREE.MathUtils.clamp(characterWorld.position.x, -planarMotion.worldHalfWidth, planarMotion.worldHalfWidth);
@@ -414,12 +416,18 @@ function updatePlanarCharacterMotion() {
    Camera staging per tab
 =========================================================== */
 const PRESENT = {
-  default:  { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
-  map:      { camPos: new THREE.Vector3(0.0, 14.0, 10.0), fov: 50, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
-  inventory:{ camPos: new THREE.Vector3(0.25, 1.55, 4.05), fov: 58, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
-  character:{ camPos: new THREE.Vector3(1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
-  cosmetics:{ camPos: new THREE.Vector3(-1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
-  settings: { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, CHARACTER_RADIUS_M, 0.0) },
+  default:  { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, CHARACTER_CENTER_Y_M, 0.0) },
+  map:      { camPos: new THREE.Vector3(0.0, 14.0, 10.0), fov: 50, charPos: new THREE.Vector3(0.0, CHARACTER_CENTER_Y_M, 0.0) },
+  inventory:{ camPos: new THREE.Vector3(0.25, 1.55, 4.05), fov: 58, charPos: new THREE.Vector3(0.0, CHARACTER_CENTER_Y_M, 0.0) },
+  character:{ camPos: new THREE.Vector3(1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, CHARACTER_CENTER_Y_M, 0.0) },
+  cosmetics:{ camPos: new THREE.Vector3(-1.35, 1.55, 3.05), fov: 52, charPos: new THREE.Vector3(0.0, CHARACTER_CENTER_Y_M, 0.0) },
+  settings: { camPos: new THREE.Vector3(0.0, 1.6, 4.25), fov: 60, charPos: new THREE.Vector3(0.0, CHARACTER_CENTER_Y_M, 0.0) },
+};
+
+const playerCamera = {
+  followDistance: 40,
+  cellOverviewEnabled: false,
+  cellOverviewOffset: new THREE.Vector3(0, 1.6, 40),
 };
 
 const present = {
@@ -522,6 +530,7 @@ let worldCleanup = null;
 let worldMapToPlane = null;
 let worldClampPlanePosition = null;
 let worldSetLodFromPosition = null;
+let worldGetCellViewFromPosition = null;
 
 const tooltip = createTooltip();
 
@@ -594,7 +603,7 @@ function renderHtmlPanel() {
         if (!Number.isFinite(burg?.x) || !Number.isFinite(burg?.y)) return;
 
         const nextPos = worldMapToPlane(burg.x, burg.y);
-        nextPos.y = CHARACTER_RADIUS_M;
+        nextPos.y = CHARACTER_CENTER_Y_M;
         worldClampPlanePosition?.(nextPos);
 
         characterWorld.position.copy(nextPos);
@@ -652,6 +661,11 @@ window.addEventListener("keydown", async (e) => {
   if (moveKey in movementInput) {
     movementInput[moveKey] = true;
     e.preventDefault();
+    return;
+  }
+
+  if (e.code === "KeyZ") {
+    playerCamera.cellOverviewEnabled = !playerCamera.cellOverviewEnabled;
     return;
   }
 
@@ -727,13 +741,14 @@ async function init() {
     worldMapToPlane = mapSpace?.mapToPlane || null;
     worldClampPlanePosition = mapSpace?.clampPlanePosition || null;
     worldSetLodFromPosition = builtWorld?.setActiveCellFromPlanePosition || null;
+    worldGetCellViewFromPosition = builtWorld?.getCellViewForPlanePosition || null;
 
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
     const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;
 
     if (worldPlane && spawn?.position) {
       const spawnPos = spawn.position.clone();
-      spawnPos.y = CHARACTER_RADIUS_M;
+      spawnPos.y = CHARACTER_CENTER_Y_M;
       worldClampPlanePosition?.(spawnPos);
 
       characterWorld.position.copy(spawnPos);
@@ -748,8 +763,11 @@ async function init() {
         updateLod: worldSetLodFromPosition,
       });
 
-      const cameraDistance = Math.max(40, CHARACTER_RADIUS_M * 4);
-      PRESENT.default.camPos.set(0, 1.6, cameraDistance);
+      playerCamera.followDistance = Math.max(40, CHARACTER_RADIUS_M * 4);
+      PRESENT.default.camPos.set(0, 1.6, playerCamera.followDistance);
+
+      const worldMaxSpan = Math.max(worldPlane.widthMeters, worldPlane.heightMeters);
+      controls.maxDistance = Math.max(200, worldMaxSpan * 0.3);
 
       controls.target.copy(spawnPos);
       present.target.copy(spawnPos);
@@ -784,6 +802,17 @@ function animate() {
 
   if (appState === "game") {
     const cameraTab = uiOpen ? activeTab : "default";
+    if (!uiOpen && playerCamera.cellOverviewEnabled && worldGetCellViewFromPosition) {
+      const cellView = worldGetCellViewFromPosition(characterWorld.position);
+      if (cellView) {
+        const overviewDistance = Math.max(cellView.radius * 1.85, playerCamera.followDistance);
+        playerCamera.cellOverviewOffset.set(0, overviewDistance * 1.05, overviewDistance);
+        PRESENT.default.camPos.copy(playerCamera.cellOverviewOffset);
+      }
+    } else {
+      PRESENT.default.camPos.set(0, 1.6, playerCamera.followDistance);
+    }
+
     const pTab = PRESENT[cameraTab] ?? PRESENT.default;
     present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, pTab.camPos));
     present.tFov = pTab.fov;
