@@ -323,10 +323,6 @@ scene.add(sky);
 
 const CHARACTER_DIAMETER_M = 2;
 const CHARACTER_RADIUS_M = CHARACTER_DIAMETER_M / 2;
-const WORLD_WIDTH_KM = 42315;
-const WORLD_HEIGHT_KM = 18855;
-const DEFAULT_KM_PER_PX = 15;
-
 const characterWorld = new THREE.Mesh(
   new THREE.SphereGeometry(CHARACTER_RADIUS_M, 32, 24),
   new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.55, metalness: 0.15 })
@@ -340,69 +336,36 @@ characterUi.layers.set(UI_CHAR_LAYER);
 characterUi.visible = false;
 scene.add(characterUi);
 
-const planetaryMotion = {
+const planarMotion = {
   enabled: false,
-  center: new THREE.Vector3(0, 0, 0),
-  surfaceRadius: 1,
-  gravityMps2: 18,
+  worldHalfWidth: 40,
+  worldHalfHeight: 40,
   moveSpeedMps: 4.5,
   moveAccelMps2: 24,
   velocity: new THREE.Vector3(),
   lastTimeS: performance.now() / 1000,
+  clampPosition: null,
+  updateLod: null,
 };
 
 const movementInput = { w: false, a: false, s: false, d: false };
 
-const _gravityUp = new THREE.Vector3();
-const _gravityDir = new THREE.Vector3();
-const _gravityTangential = new THREE.Vector3();
-const _gravityQuat = new THREE.Quaternion();
-const _gravityRef = new THREE.Vector3(0, 1, 0);
-
-function enablePlanetaryCharacterMotion({ center, surfaceRadius }) {
-  planetaryMotion.enabled = true;
-  planetaryMotion.center.copy(center);
-  planetaryMotion.surfaceRadius = surfaceRadius;
-  planetaryMotion.velocity.set(0, 0, 0);
-  planetaryMotion.lastTimeS = performance.now() / 1000;
+function enablePlanarCharacterMotion({ worldWidth, worldHeight, clampPosition, updateLod }) {
+  planarMotion.enabled = true;
+  planarMotion.worldHalfWidth = worldWidth / 2;
+  planarMotion.worldHalfHeight = worldHeight / 2;
+  planarMotion.velocity.set(0, 0, 0);
+  planarMotion.lastTimeS = performance.now() / 1000;
+  planarMotion.clampPosition = typeof clampPosition === "function" ? clampPosition : null;
+  planarMotion.updateLod = typeof updateLod === "function" ? updateLod : null;
 }
 
-function getDistanceScaleKmPerPx(world) {
-  const scale = Number(world?.settings?.distanceScale);
-  return Number.isFinite(scale) && scale > 0 ? scale : DEFAULT_KM_PER_PX;
-}
-
-function getWorldSizePxFromKm(world) {
-  const kmPerPx = getDistanceScaleKmPerPx(world);
-  return {
-    width: Math.round(WORLD_WIDTH_KM / kmPerPx),
-    height: Math.round(WORLD_HEIGHT_KM / kmPerPx),
-  };
-}
-
-function mapToSpherePosition(x, y, { width, height, radius, center }) {
-  const u = x / width;
-  const v = y / height;
-
-  const lon = (u - 0.5) * Math.PI * 2;
-  const lat = (0.5 - v) * Math.PI;
-
-  const cosLat = Math.cos(lat);
-  return new THREE.Vector3(
-    center.x + radius * cosLat * Math.cos(lon),
-    center.y + radius * Math.sin(lat),
-    center.z + radius * cosLat * Math.sin(lon)
-  );
-}
-
-function updatePlanetaryCharacterMotion() {
-  if (!planetaryMotion.enabled) return;
+function updatePlanarCharacterMotion() {
+  if (!planarMotion.enabled) return;
 
   const nowS = performance.now() / 1000;
-  const dt = Math.min(0.05, Math.max(0.001, nowS - planetaryMotion.lastTimeS));
-  planetaryMotion.lastTimeS = nowS;
-
-  _gravityDir.copy(planetaryMotion.center).sub(characterWorld.position).normalize();
+  const dt = Math.min(0.05, Math.max(0.001, nowS - planarMotion.lastTimeS));
+  planarMotion.lastTimeS = nowS;
 
   _moveDesired.set(0, 0, 0);
   if (movementInput.w) _moveDesired.z -= 1;
@@ -410,15 +373,14 @@ function updatePlanetaryCharacterMotion() {
   if (movementInput.a) _moveDesired.x -= 1;
   if (movementInput.d) _moveDesired.x += 1;
 
-  _moveNormal.copy(characterWorld.position).sub(planetaryMotion.center).normalize();
-  _moveForward.copy(camera.position).sub(characterWorld.position).negate().normalize();
-  _moveForward.projectOnPlane(_moveNormal);
+  _moveNormal.set(0, 1, 0);
+  _moveForward.copy(camera.position).sub(characterWorld.position).setY(0);
   if (_moveForward.lengthSq() < 1e-6) {
     _moveForwardLocal.set(0, 0, -1).applyQuaternion(characterWorld.quaternion);
-    _moveForward.copy(_moveForwardLocal).projectOnPlane(_moveNormal);
+    _moveForward.copy(_moveForwardLocal).setY(0);
   }
   _moveForward.normalize();
-  _moveRight.crossVectors(_moveForward, _moveNormal).normalize();
+  _moveRight.crossVectors(_moveNormal, _moveForward).normalize();
 
   if (_moveDesired.lengthSq() > 0) {
     _moveDesired.normalize();
@@ -427,30 +389,24 @@ function updatePlanetaryCharacterMotion() {
       .multiplyScalar(-_moveDesired.z)
       .addScaledVector(_moveRight, _moveDesired.x)
       .normalize()
-      .multiplyScalar(planetaryMotion.moveSpeedMps);
+      .multiplyScalar(planarMotion.moveSpeedMps);
 
-    _moveTangent.copy(planetaryMotion.velocity).projectOnPlane(_moveNormal);
-    _moveTangent.lerp(_moveTemp, Math.min(1, planetaryMotion.moveAccelMps2 * dt / planetaryMotion.moveSpeedMps));
-    planetaryMotion.velocity.copy(_moveTangent);
+    _moveTangent.copy(planarMotion.velocity).setY(0);
+    _moveTangent.lerp(_moveTemp, Math.min(1, planarMotion.moveAccelMps2 * dt / planarMotion.moveSpeedMps));
+    planarMotion.velocity.copy(_moveTangent);
+  } else {
+    planarMotion.velocity.multiplyScalar(0.88);
   }
 
-  planetaryMotion.velocity.addScaledVector(_gravityDir, planetaryMotion.gravityMps2 * dt);
-  characterWorld.position.addScaledVector(planetaryMotion.velocity, dt);
-
-  _gravityUp.copy(characterWorld.position).sub(planetaryMotion.center).normalize();
-  const currentRadius = characterWorld.position.distanceTo(planetaryMotion.center);
-  if (currentRadius < planetaryMotion.surfaceRadius) {
-    characterWorld.position.copy(_gravityUp.multiplyScalar(planetaryMotion.surfaceRadius).add(planetaryMotion.center));
-
-    const radialSpeed = planetaryMotion.velocity.dot(_gravityUp);
-    if (radialSpeed < 0) planetaryMotion.velocity.addScaledVector(_gravityUp, -radialSpeed);
-    _gravityTangential.copy(planetaryMotion.velocity).projectOnPlane(_gravityUp);
-    planetaryMotion.velocity.copy(_gravityTangential).multiplyScalar(_moveDesired.lengthSq() > 0 ? 0.996 : 0.90);
+  planarMotion.velocity.y = 0;
+  characterWorld.position.addScaledVector(planarMotion.velocity, dt);
+  characterWorld.position.y = CHARACTER_RADIUS_M;
+  if (planarMotion.clampPosition) planarMotion.clampPosition(characterWorld.position);
+  else {
+    characterWorld.position.x = THREE.MathUtils.clamp(characterWorld.position.x, -planarMotion.worldHalfWidth, planarMotion.worldHalfWidth);
+    characterWorld.position.z = THREE.MathUtils.clamp(characterWorld.position.z, -planarMotion.worldHalfHeight, planarMotion.worldHalfHeight);
   }
-
-  _gravityUp.copy(characterWorld.position).sub(planetaryMotion.center).normalize();
-  _gravityQuat.setFromUnitVectors(_up, _gravityUp);
-  characterWorld.quaternion.copy(_gravityQuat);
+  planarMotion.updateLod?.(characterWorld.position);
 }
 
 
@@ -485,7 +441,7 @@ function applyPresentationForTab(tabId) {
   const p = PRESENT[tabId] ?? PRESENT.default;
   present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, p.camPos));
   present.tFov = p.fov;
-  if (!planetaryMotion.enabled) present.tCharPos.copy(p.charPos);
+  if (!planarMotion.enabled) present.tCharPos.copy(p.charPos);
 }
 
 const _up = new THREE.Vector3(0, 1, 0);
@@ -494,12 +450,7 @@ const _right = new THREE.Vector3();
 const _camUp = new THREE.Vector3();
 const _toChar = new THREE.Vector3();
 const _offset = new THREE.Vector3();
-const _basisUp = new THREE.Vector3();
-const _basisEast = new THREE.Vector3();
-const _basisNorth = new THREE.Vector3();
-const _basisRef = new THREE.Vector3(0, 1, 0);
-const _basisAltRef = new THREE.Vector3(1, 0, 0);
-const _planetOffset = new THREE.Vector3();
+const _worldOffset = new THREE.Vector3();
 const _moveForward = new THREE.Vector3();
 const _moveRight = new THREE.Vector3();
 const _moveDesired = new THREE.Vector3();
@@ -510,19 +461,7 @@ const _moveTemp = new THREE.Vector3();
 const _aim = new THREE.Vector3();
 
 function worldPositionFromCharacterOffset(characterPos, offset) {
-  if (!planetaryMotion.enabled) return _planetOffset.copy(characterPos).add(offset);
-
-  _basisUp.copy(characterPos).sub(planetaryMotion.center).normalize();
-  _basisEast.crossVectors(_basisRef, _basisUp);
-  if (_basisEast.lengthSq() < 1e-6) _basisEast.crossVectors(_basisAltRef, _basisUp);
-  _basisEast.normalize();
-  _basisNorth.crossVectors(_basisUp, _basisEast).normalize();
-
-  return _planetOffset
-    .copy(characterPos)
-    .addScaledVector(_basisEast, offset.x)
-    .addScaledVector(_basisUp, offset.y)
-    .addScaledVector(_basisNorth, offset.z);
+  return _worldOffset.copy(characterPos).add(offset);
 }
 
 function computeAimTargetForCharacterNDC(camPos, charPos, nx, ny, fovDeg, aspect) {
@@ -580,7 +519,9 @@ let activeTab = "map";
 
 let uiCleanup = null;
 let worldCleanup = null;
-let worldMeta = null;
+let worldMapToPlane = null;
+let worldClampPlanePosition = null;
+let worldSetLodFromPosition = null;
 
 const tooltip = createTooltip();
 
@@ -649,18 +590,16 @@ function renderHtmlPanel() {
       getUiState,
       setUiState,
       onNodeClick: (burg) => {
-        if (!planetaryMotion.enabled || !worldMeta) return;
+        if (!planarMotion.enabled || !worldMapToPlane) return;
         if (!Number.isFinite(burg?.x) || !Number.isFinite(burg?.y)) return;
 
-        const nextPos = mapToSpherePosition(burg.x, burg.y, {
-          width: worldMeta.width,
-          height: worldMeta.height,
-          radius: planetaryMotion.surfaceRadius,
-          center: planetaryMotion.center,
-        });
+        const nextPos = worldMapToPlane(burg.x, burg.y);
+        nextPos.y = CHARACTER_RADIUS_M;
+        worldClampPlanePosition?.(nextPos);
 
         characterWorld.position.copy(nextPos);
-        planetaryMotion.velocity.set(0, 0, 0);
+        planarMotion.velocity.set(0, 0, 0);
+        worldSetLodFromPosition?.(nextPos);
         present.charPos.copy(nextPos);
         present.tCharPos.copy(nextPos);
         controls.target.copy(nextPos);
@@ -783,27 +722,33 @@ async function init() {
     fallbackGround.visible = false;
     fallbackGrid.visible = false;
 
-    const planet = builtWorld?.planet;
-    const loadedWorld = builtWorld?.world;
-    const fallbackSize = getWorldSizePxFromKm(loadedWorld);
-    worldMeta = {
-      width: Number(loadedWorld?.info?.width || fallbackSize.width),
-      height: Number(loadedWorld?.info?.height || fallbackSize.height),
-    };
+    const worldPlane = builtWorld?.worldPlane;
+    const mapSpace = builtWorld?.mapSpace;
+    worldMapToPlane = mapSpace?.mapToPlane || null;
+    worldClampPlanePosition = mapSpace?.clampPlanePosition || null;
+    worldSetLodFromPosition = builtWorld?.setActiveCellFromPlanePosition || null;
+
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
     const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;
 
-    if (planet && spawn?.position) {
-      _gravityUp.copy(spawn.position).sub(planet.center).normalize();
-      const spawnRadius = planet.oceanRadius + CHARACTER_RADIUS_M;
-      const spawnPos = planet.center.clone().addScaledVector(_gravityUp, spawnRadius);
+    if (worldPlane && spawn?.position) {
+      const spawnPos = spawn.position.clone();
+      spawnPos.y = CHARACTER_RADIUS_M;
+      worldClampPlanePosition?.(spawnPos);
 
       characterWorld.position.copy(spawnPos);
       present.charPos.copy(spawnPos);
       present.tCharPos.copy(spawnPos);
-      enablePlanetaryCharacterMotion({ center: planet.center, surfaceRadius: spawnRadius });
 
-      const cameraDistance = Math.max(4.25, spawnRadius * 0.00002);
+      worldSetLodFromPosition?.(spawnPos);
+      enablePlanarCharacterMotion({
+        worldWidth: worldPlane.widthMeters,
+        worldHeight: worldPlane.heightMeters,
+        clampPosition: worldClampPlanePosition,
+        updateLod: worldSetLodFromPosition,
+      });
+
+      const cameraDistance = Math.max(40, CHARACTER_RADIUS_M * 4);
       PRESENT.default.camPos.set(0, 1.6, cameraDistance);
 
       controls.target.copy(spawnPos);
@@ -843,7 +788,7 @@ function animate() {
     present.tCamPos.copy(worldPositionFromCharacterOffset(characterWorld.position, pTab.camPos));
     present.tFov = pTab.fov;
 
-    if (planetaryMotion.enabled) updatePlanetaryCharacterMotion();
+    if (planarMotion.enabled) updatePlanarCharacterMotion();
 
     present.camPos.lerp(present.tCamPos, present.camLerp);
     present.fov = THREE.MathUtils.lerp(present.fov, present.tFov, present.fovLerp);
@@ -855,7 +800,7 @@ function animate() {
       camera.updateProjectionMatrix();
     }
 
-    if (!planetaryMotion.enabled) {
+    if (!planarMotion.enabled) {
       characterWorld.position.copy(present.charPos);
     }
 
