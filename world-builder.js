@@ -166,7 +166,21 @@ function pushRoadSegmentQuad({ positions, start, end, halfWidth, y }) {
   );
 }
 
-function makeRoadMesh({ routes, converters, widthMeters = 12 }) {
+function getRoadPointHeightMeters(point, cells) {
+  if (!Array.isArray(point)) return 1.8;
+
+  const cellIndex = Number.isInteger(point[2]) ? point[2] : -1;
+  const cell = cellIndex >= 0 ? cells?.[cellIndex] : null;
+  if (!cell) return 1.8;
+
+  const isLand = Number(cell.h || 0) > 19;
+  return yForCell({
+    isLand,
+    elevation: Number(cell.h || 0),
+  }) + 0.75;
+}
+
+function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
   if (!Array.isArray(routes) || routes.length === 0) return null;
 
   const positions = [];
@@ -181,7 +195,8 @@ function makeRoadMesh({ routes, converters, widthMeters = 12 }) {
       if (!Array.isArray(a) || !Array.isArray(b)) continue;
       const start = converters.mapToPlane(Number(a[0]), Number(a[1]));
       const end = converters.mapToPlane(Number(b[0]), Number(b[1]));
-      pushRoadSegmentQuad({ positions, start, end, halfWidth, y: roadY });
+      const segmentY = Math.max(getRoadPointHeightMeters(a, cells), getRoadPointHeightMeters(b, cells), roadY);
+      pushRoadSegmentQuad({ positions, start, end, halfWidth, y: segmentY });
     }
   }
 
@@ -355,7 +370,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   if (landPositions.length > 0) {
     loadedCellGroup.add(makeTerrainMesh({ positions: landPositions, colors: landColors, material: terrainMaterials.land }));
   }
-  const roadsMesh = makeRoadMesh({ routes, converters, widthMeters: 12 });
+  const roadsMesh = makeRoadMesh({ routes, cells, converters, widthMeters: 12 });
   if (roadsMesh) loadedCellGroup.add(roadsMesh);
 
   function findCellByMapPoint(x, y) {
