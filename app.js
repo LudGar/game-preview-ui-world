@@ -250,7 +250,6 @@ const worldRenderer = new THREE.WebGLRenderer({
   canvas: worldCanvas,
   antialias: true,
   alpha: false,
-  logarithmicDepthBuffer: true,
 });
 worldRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 worldRenderer.setSize(window.innerWidth, window.innerHeight);
@@ -279,7 +278,6 @@ const overlayRenderer = new THREE.WebGLRenderer({
   canvas: overlayCanvas,
   antialias: true,
   alpha: true,
-  logarithmicDepthBuffer: true,
 });
 overlayRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 overlayRenderer.setSize(window.innerWidth, window.innerHeight);
