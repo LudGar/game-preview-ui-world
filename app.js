@@ -246,7 +246,12 @@ function buildSaveFiles(panel, { saves, onPickSave, onBack }) {
 const worldCanvas = document.getElementById("c");
 if (!worldCanvas) throw new Error(`[App] Missing <canvas id="c">`);
 
-const worldRenderer = new THREE.WebGLRenderer({ canvas: worldCanvas, antialias: true, alpha: false });
+const worldRenderer = new THREE.WebGLRenderer({
+  canvas: worldCanvas,
+  antialias: true,
+  alpha: false,
+  logarithmicDepthBuffer: true,
+});
 worldRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 worldRenderer.setSize(window.innerWidth, window.innerHeight);
 worldRenderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -270,14 +275,19 @@ function ensureOverlayCanvas() {
 }
 const overlayCanvas = ensureOverlayCanvas();
 
-const overlayRenderer = new THREE.WebGLRenderer({ canvas: overlayCanvas, antialias: true, alpha: true });
+const overlayRenderer = new THREE.WebGLRenderer({
+  canvas: overlayCanvas,
+  antialias: true,
+  alpha: true,
+  logarithmicDepthBuffer: true,
+});
 overlayRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 overlayRenderer.setSize(window.innerWidth, window.innerHeight);
 overlayRenderer.outputColorSpace = THREE.SRGBColorSpace;
 overlayRenderer.setClearColor(0x000000, 0);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 20_000_000);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 10_000);
 camera.position.set(0, 1.6, 4.25);
 scene.add(camera);
 
@@ -326,7 +336,18 @@ function mountWorldGrid(worldWidth, worldHeight) {
   const span = Math.max(worldWidth, worldHeight);
   const divisions = THREE.MathUtils.clamp(Math.round(span / 150000), 40, 240);
   worldGrid = new THREE.GridHelper(span, divisions, 0xf4f8ff, 0x5c6d80);
-  worldGrid.position.y = 0.02;
+  worldGrid.position.y = 0.5;
+  worldGrid.renderOrder = 2;
+
+  const gridMaterials = Array.isArray(worldGrid.material)
+    ? worldGrid.material
+    : [worldGrid.material];
+  for (const mat of gridMaterials) {
+    mat.depthWrite = false;
+    mat.transparent = true;
+    mat.opacity = 0.7;
+  }
+
   worldGrid.layers.set(WORLD_LAYER);
   scene.add(worldGrid);
 }
@@ -831,6 +852,8 @@ async function init() {
       PRESENT.default.camPos.set(0, 1.6, playerCamera.followDistance);
 
       const worldMaxSpan = Math.max(worldPlane.widthMeters, worldPlane.heightMeters);
+      camera.far = Math.max(5_000, worldMaxSpan * 3);
+      camera.updateProjectionMatrix();
       controls.maxDistance = Math.max(200, worldMaxSpan * 0.3);
       controls.maxPolarAngle = Math.PI / 2 - 0.02;
 
