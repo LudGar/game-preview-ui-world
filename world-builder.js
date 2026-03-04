@@ -110,6 +110,26 @@ function yForCell({ isLand, elevation }) {
   return 0.35 + normalizedElevation * 3.2;
 }
 
+function pushCellTriangles({ positions, colors, polygon, y, color }) {
+  if (!Array.isArray(polygon) || polygon.length < 3) return;
+  const triangles = THREE.ShapeUtils.triangulateShape(polygon, []);
+  for (const tri of triangles) {
+    for (const vertIndex of tri) {
+      const p = polygon[vertIndex];
+      positions.push(p.x, y, p.y);
+      colors.push(color.r, color.g, color.b);
+    }
+  }
+}
+
+function makeTerrainMesh({ positions, colors, material }) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, material);
+}
+
 export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const res = await fetch(encodeURI(url), { cache: "no-store" });
   if (!res.ok) throw new Error(`[WorldBuilder] Failed to load world JSON: ${res.status}`);
@@ -211,60 +231,79 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     town: new THREE.MeshStandardMaterial({ color: 0xb6c8a8 }),
   };
 
-  function createCellVisual(cellIndex) {
-    const data = cellData[cellIndex];
-    if (!data) return null;
+  let activeCellIndex = -1;
 
-    const shape = new THREE.Shape(data.planePolygon);
-    const geo = new THREE.ShapeGeometry(shape);
-    geo.rotateX(-Math.PI / 2);
+  const terrainMaterials = {
+    land: new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.92,
+      metalness: 0.02,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    }),
+    water: new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.95,
+      metalness: 0.01,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    }),
+  };
 
-    const fill = new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({
-        color: colorForCell({
-          isLand: data.isLand,
-          biomeColor: biomePalette.get(data.biome) || null,
-          elevation: data.elevation,
-        }),
-        transparent: true,
-        opacity: data.isLand ? 0.94 : 0.74,
-        roughness: 0.92,
-        metalness: 0.02,
-      })
-    );
-    fill.position.y = yForCell(data);
+  const borderMaterials = {
+    land: new THREE.LineBasicMaterial({ color: 0xe2f5de, transparent: true, opacity: 0.38 }),
+    water: new THREE.LineBasicMaterial({ color: 0x84bddf, transparent: true, opacity: 0.38 }),
+  };
 
-    const borderHeight = fill.position.y + (data.isLand ? 0.4 : 0.25);
+  const landPositions = [];
+  const landColors = [];
+  const waterPositions = [];
+  const waterColors = [];
+
+  for (let idx = 0; idx < cellData.length; idx += 1) {
+    const data = cellData[idx];
+    if (!data) continue;
+
+    const color = colorForCell({
+      isLand: data.isLand,
+      biomeColor: biomePalette.get(data.biome) || null,
+      elevation: data.elevation,
+    });
+
+    pushCellTriangles({
+      positions: data.isLand ? landPositions : waterPositions,
+      colors: data.isLand ? landColors : waterColors,
+      polygon: data.planePolygon,
+      y: yForCell(data),
+      color,
+    });
+
+    const borderHeight = yForCell(data) + (data.isLand ? 0.4 : 0.25);
     const ringPoints = data.planePolygon.map((p) => new THREE.Vector3(p.x, borderHeight, p.y));
     const border = new THREE.LineLoop(
       new THREE.BufferGeometry().setFromPoints(ringPoints),
-      new THREE.LineBasicMaterial({ color: data.isLand ? 0xe2f5de : 0x84bddf, transparent: true, opacity: 0.38 })
+      data.isLand ? borderMaterials.land : borderMaterials.water
     );
+    loadedCellGroup.add(border);
 
-    const node = new THREE.Group();
-    node.add(fill);
-    node.add(border);
-
-    const localBurgs = settlementByCell.get(cellIndex) || [];
+    const localBurgs = settlementByCell.get(idx) || [];
     for (const b of localBurgs) {
       const pop = Number(b.population || 0);
       const mat = b.capital ? mats.capital : pop >= 5 ? mats.city : mats.town;
       const pos = converters.mapToPlane(b.x, b.y);
       const marker = new THREE.Mesh(markerGeo, mat);
       marker.position.set(pos.x, 1200, pos.z);
-      node.add(marker);
+      loadedCellGroup.add(marker);
     }
-
-    return { node, geometry: geo, borderGeometry: border.geometry };
   }
 
-  let activeCellIndex = -1;
-
-  for (let idx = 0; idx < cellData.length; idx += 1) {
-    const visual = createCellVisual(idx);
-    if (!visual) continue;
-    loadedCellGroup.add(visual.node);
+  if (landPositions.length > 0) {
+    loadedCellGroup.add(makeTerrainMesh({ positions: landPositions, colors: landColors, material: terrainMaterials.land }));
+  }
+  if (waterPositions.length > 0) {
+    loadedCellGroup.add(makeTerrainMesh({ positions: waterPositions, colors: waterColors, material: terrainMaterials.water }));
   }
 
   function findCellByMapPoint(x, y) {
@@ -353,6 +392,10 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       mats.capital.dispose();
       mats.city.dispose();
       mats.town.dispose();
+      terrainMaterials.land.dispose();
+      terrainMaterials.water.dispose();
+      borderMaterials.land.dispose();
+      borderMaterials.water.dispose();
     },
   };
 }
