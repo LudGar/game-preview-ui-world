@@ -317,38 +317,7 @@ fallbackGround.rotation.x = -Math.PI / 2;
 fallbackGround.layers.set(WORLD_LAYER);
 scene.add(fallbackGround);
 
-const fallbackGrid = new THREE.GridHelper(80, 80, 0xffffff, 0x5a6b7a);
-fallbackGrid.position.y = 0.001;
-fallbackGrid.layers.set(WORLD_LAYER);
-scene.add(fallbackGrid);
-
-let worldGrid = null;
-
-function mountWorldGrid(worldWidth, worldHeight) {
-  if (worldGrid) {
-    scene.remove(worldGrid);
-    worldGrid.geometry.dispose?.();
-    worldGrid.material.dispose?.();
-  }
-
-  const span = Math.max(worldWidth, worldHeight);
-  const divisions = THREE.MathUtils.clamp(Math.round(span / 150000), 40, 240);
-  worldGrid = new THREE.GridHelper(span, divisions, 0xf4f8ff, 0x5c6d80);
-  worldGrid.position.y = 0.5;
-  worldGrid.renderOrder = 2;
-
-  const gridMaterials = Array.isArray(worldGrid.material)
-    ? worldGrid.material
-    : [worldGrid.material];
-  for (const mat of gridMaterials) {
-    mat.depthWrite = false;
-    mat.transparent = true;
-    mat.opacity = 0.7;
-  }
-
-  worldGrid.layers.set(WORLD_LAYER);
-  scene.add(worldGrid);
-}
+function mountWorldGrid() {}
 
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(120, 32, 16),
@@ -816,7 +785,6 @@ async function init() {
     });
     worldCleanup = builtWorld.cleanup;
     fallbackGround.visible = false;
-    fallbackGrid.visible = false;
 
     const worldPlane = builtWorld?.worldPlane;
     const mapSpace = builtWorld?.mapSpace;
@@ -860,9 +828,8 @@ async function init() {
       present.tTarget.copy(spawnPos);
     }
   } catch (err) {
-    console.warn("[App] World build failed; using fallback plane/grid.", err);
+    console.warn("[App] World build failed; using fallback plane.", err);
     fallbackGround.visible = true;
-    fallbackGrid.visible = true;
     motionHud.style.display = "none";
   }
 
