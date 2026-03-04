@@ -87,6 +87,86 @@ function outlineSvgFromWorld(world) {
   return `<svg viewBox="0 0 ${w} ${h}" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none;">${paths}</svg>`;
 }
 
+
+function linePathFromPoints(points) {
+  if (!Array.isArray(points) || points.length < 2) return "";
+  return points
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${p[0].toFixed(2)} ${p[1].toFixed(2)}`)
+    .join(" ");
+}
+
+function roadsSvgFromWorld(world) {
+  const pack = world?.pack;
+  const routes = Array.isArray(pack?.routes) ? pack.routes : [];
+  const fallbackSize = getWorldSizePxFromKm(world);
+  const w = world?.info?.width || fallbackSize.width;
+  const h = world?.info?.height || fallbackSize.height;
+
+  const roadPaths = [];
+
+  for (const route of routes) {
+    if (!route || typeof route !== "object") continue;
+    if (route.group !== "roads") continue;
+    if (!Array.isArray(route.points) || route.points.length < 2) continue;
+
+    const pts = route.points
+      .map((p) => (Array.isArray(p) && p.length >= 2 ? [Number(p[0]), Number(p[1])] : null))
+      .filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+
+    if (pts.length < 2) continue;
+
+    const d = linePathFromPoints(pts);
+    if (!d) continue;
+
+    // Approximate render width for 10–15 m roads (wider than "2 car widths" visual)
+    const roadWidthPx = 2.8;
+    roadPaths.push(`<path d="${d}" fill="none" stroke="rgba(196,169,120,0.82)" stroke-width="${roadWidthPx}" stroke-linecap="round" stroke-linejoin="round" />`);
+  }
+
+  return `<svg viewBox="0 0 ${w} ${h}" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none;">${roadPaths.join("")}</svg>`;
+}
+
+function riversSvgFromWorld(world) {
+  const pack = world?.pack;
+  const rivers = Array.isArray(pack?.rivers) ? pack.rivers : [];
+  const cells = Array.isArray(pack?.cells) ? pack.cells : [];
+  const fallbackSize = getWorldSizePxFromKm(world);
+  const w = world?.info?.width || fallbackSize.width;
+  const h = world?.info?.height || fallbackSize.height;
+
+  const riverPaths = [];
+
+  for (const river of rivers) {
+    if (!river || typeof river !== "object") continue;
+    if (!Array.isArray(river.cells) || river.cells.length < 2) continue;
+
+    const pts = [];
+    for (const cellId of river.cells) {
+      const p = cells[cellId]?.p;
+      if (!Array.isArray(p) || p.length < 2) continue;
+      const x = Number(p[0]);
+      const y = Number(p[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+      const prev = pts[pts.length - 1];
+      if (!prev || prev[0] !== x || prev[1] !== y) pts.push([x, y]);
+    }
+
+    if (pts.length < 2) continue;
+
+    const d = linePathFromPoints(pts);
+    if (!d) continue;
+
+    const widthScale = Number(river.widthFactor) || 1;
+    const width = Number(river.width) || Number(river.sourceWidth) || 0.04;
+    const riverWidthPx = clamp(width * widthScale * 6, 0.8, 11);
+
+    riverPaths.push(`<path d="${d}" fill="none" stroke="rgba(116,178,236,0.74)" stroke-width="${riverWidthPx.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round" />`);
+  }
+
+  return `<svg viewBox="0 0 ${w} ${h}" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none;">${riverPaths.join("")}</svg>`;
+}
+
 // [Inference] Category split: we classify “city vs town” by population threshold.
 // If you later add explicit Azgaar type handling, we can use that.
 function classifyBurg(burg, cityPopThreshold) {
@@ -194,6 +274,8 @@ export function buildMapTab(
             </div>
 
             <div id="mapOutline" style="position:absolute; inset:0; z-index:1;"></div>
+            <div id="mapRivers" style="position:absolute; inset:0; z-index:2;"></div>
+            <div id="mapRoads" style="position:absolute; inset:0; z-index:2;"></div>
             <div id="mapMarkers" style="position:absolute; inset:0; z-index:3;"></div>
 
             <div id="mapStatus" style="
@@ -232,6 +314,8 @@ export function buildMapTab(
   const viewport = panel.querySelector("#mapViewport");
   const mapCanvas = panel.querySelector("#mapCanvas");
   const outlineEl = panel.querySelector("#mapOutline");
+  const riversEl = panel.querySelector("#mapRivers");
+  const roadsEl = panel.querySelector("#mapRoads");
   const markersEl = panel.querySelector("#mapMarkers");
   const statusEl = panel.querySelector("#mapStatus");
   const zoomBadgeEl = panel.querySelector("#mapZoomBadge");
@@ -488,6 +572,8 @@ export function buildMapTab(
       mapCanvas.style.height = `${h}px`;
 
       outlineEl.innerHTML = outlineSvgFromWorld(world);
+      riversEl.innerHTML = riversSvgFromWorld(world);
+      roadsEl.innerHTML = roadsSvgFromWorld(world);
 
       // Lookups
       stateNameById = new Map();
