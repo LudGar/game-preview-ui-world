@@ -190,7 +190,9 @@ function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
 
   const positions = [];
   const halfWidth = Math.max(1, widthMeters * 0.5);
-  const roadY = 1.4;
+  // Keep roads clearly above terrain/water to avoid depth-buffer fighting on this large map scale.
+  const minRoadY = 6;
+  const roadClearance = 8;
 
   for (const route of routes) {
     if (!route || route.group !== "roads" || !Array.isArray(route.points) || route.points.length < 2) continue;
@@ -200,7 +202,7 @@ function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
       if (!Array.isArray(a) || !Array.isArray(b)) continue;
       const start = converters.mapToPlane(Number(a[0]), Number(a[1]));
       const end = converters.mapToPlane(Number(b[0]), Number(b[1]));
-      const segmentY = Math.max(getRoadPointHeightMeters(a, cells), getRoadPointHeightMeters(b, cells), roadY);
+      const segmentY = Math.max(getRoadPointHeightMeters(a, cells), getRoadPointHeightMeters(b, cells), minRoadY) + roadClearance;
       pushRoadSegmentQuad({ positions, start, end, halfWidth, y: segmentY });
     }
   }
@@ -215,16 +217,16 @@ function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
     color: 0x685f56,
     roughness: 0.97,
     metalness: 0.01,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
     depthWrite: false,
   });
   
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.renderOrder = 12;
-  return mesh;
+  const roads = new THREE.Mesh(geometry, material);
+  roads.renderOrder = 12;
+  return roads;
 }
 
 function getRiverPointHeightMeters(cell) {
