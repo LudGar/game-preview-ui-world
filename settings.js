@@ -25,7 +25,37 @@ function mkBtn(label) {
   return b;
 }
 
-export function buildSettingsTab(panel, { seed, onQuit, onBackToMainMenu, onSwitchCharacter }) {
+function mkToggle(label, checked, onChange) {
+  const row = document.createElement("label");
+  row.style.display = "flex";
+  row.style.alignItems = "center";
+  row.style.justifyContent = "space-between";
+  row.style.gap = "10px";
+  row.style.padding = "10px 12px";
+  row.style.borderRadius = "12px";
+  row.style.border = "1px solid rgba(255,255,255,0.10)";
+  row.style.background = "rgba(8,10,13,0.45)";
+
+  const text = document.createElement("span");
+  text.textContent = label;
+  text.style.font = "700 12px system-ui";
+  text.style.letterSpacing = "0.05em";
+  text.style.color = "rgba(255,255,255,0.92)";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = !!checked;
+  input.style.width = "16px";
+  input.style.height = "16px";
+  input.style.cursor = "pointer";
+  input.addEventListener("change", () => onChange?.(input.checked));
+
+  row.appendChild(text);
+  row.appendChild(input);
+  return row;
+}
+
+export function buildSettingsTab(panel, { seed, renderOptions = null, onRenderOptionChange, onQuit, onBackToMainMenu, onSwitchCharacter }) {
   panel.innerHTML = `
     <div style="display:flex; flex-direction:column; height:100%;">
       <div style="
@@ -41,7 +71,15 @@ export function buildSettingsTab(panel, { seed, onQuit, onBackToMainMenu, onSwit
 
       <div style="flex:1; padding:16px; display:flex; flex-direction:column; gap:12px;">
         <div style="color:rgba(255,255,255,0.70); font:600 13px system-ui;">
-          Actions (placeholder).
+          Render Layers
+        </div>
+
+        <div id="renderToggles" style="display:grid; gap:8px; max-width:420px;"></div>
+
+        <div style="height:1px; background:rgba(255,255,255,0.08); margin:4px 0;"></div>
+
+        <div style="color:rgba(255,255,255,0.70); font:600 13px system-ui;">
+          Actions
         </div>
 
         <div id="settingsBtns" style="display:flex; flex-direction:column; gap:10px; max-width:380px;"></div>
@@ -53,7 +91,27 @@ export function buildSettingsTab(panel, { seed, onQuit, onBackToMainMenu, onSwit
     </div>
   `;
 
+  const toggleBox = panel.querySelector("#renderToggles");
   const box = panel.querySelector("#settingsBtns");
+
+  if (renderOptions && toggleBox) {
+    const toggles = [
+      ["terrain", "Terrain"],
+      ["oceans", "Oceans"],
+      ["roads", "Roads"],
+      ["settlements", "Settlements / Burgs"],
+      ["rivers", "Rivers"],
+      ["cells", "Cell Borders"],
+    ];
+
+    for (const [key, label] of toggles) {
+      toggleBox.appendChild(
+        mkToggle(label, renderOptions[key], (enabled) => {
+          onRenderOptionChange?.(key, enabled);
+        })
+      );
+    }
+  }
 
   const bQuit = mkBtn("QUIT");
   const bMain = mkBtn("BACK TO MAIN MENU");
