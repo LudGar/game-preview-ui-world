@@ -210,6 +210,60 @@ function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
     color: 0x685f56,
     roughness: 0.97,
     metalness: 0.01,
+    side: THREE.DoubleSide,
+  });
+
+  return new THREE.Mesh(geometry, material);
+}
+
+function getRiverPointHeightMeters(cell) {
+  if (!cell) return 0.4;
+  const isLand = Number(cell.h || 0) > 19;
+  return yForCell({
+    isLand,
+    elevation: Number(cell.h || 0),
+  }) + 0.45;
+}
+
+function makeRiverMesh({ rivers, cells, converters }) {
+  if (!Array.isArray(rivers) || rivers.length === 0) return null;
+
+  const positions = [];
+
+  for (const river of rivers) {
+    if (!river || !Array.isArray(river.cells) || river.cells.length < 2) continue;
+
+    const riverWidthKm = Number(river.width || 0.08);
+    const widthMeters = THREE.MathUtils.clamp(riverWidthKm * METERS_PER_KM, 40, 850);
+    const halfWidth = widthMeters * 0.5;
+
+    for (let i = 0; i < river.cells.length - 1; i += 1) {
+      const aCell = cells?.[river.cells[i]];
+      const bCell = cells?.[river.cells[i + 1]];
+      const aPos = aCell?.p;
+      const bPos = bCell?.p;
+      if (!Array.isArray(aPos) || !Array.isArray(bPos)) continue;
+
+      const start = converters.mapToPlane(Number(aPos[0]), Number(aPos[1]));
+      const end = converters.mapToPlane(Number(bPos[0]), Number(bPos[1]));
+      const segmentY = Math.max(getRiverPointHeightMeters(aCell), getRiverPointHeightMeters(bCell));
+      pushRoadSegmentQuad({ positions, start, end, halfWidth, y: segmentY });
+    }
+  }
+
+  if (positions.length === 0) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x4fa9df,
+    roughness: 0.3,
+    metalness: 0.02,
+    transparent: true,
+    opacity: 0.9,
+    side: THREE.DoubleSide,
   });
 
   return new THREE.Mesh(geometry, material);
@@ -372,6 +426,15 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
+      side: THREE.DoubleSide,
+    }),
+    water: new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.35,
+      metalness: 0.02,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
     }),
     water: new THREE.MeshStandardMaterial({
       vertexColors: true,
