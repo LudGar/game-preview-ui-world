@@ -85,6 +85,11 @@ function makeMapSpaceConverters({ widthPx, heightPx, widthMeters, heightMeters }
   };
 }
 
+function setObjectVisibility(object3d, visible) {
+  if (!object3d) return;
+  object3d.visible = !!visible;
+}
+
 function parseBiomePalette(world) {
   const colors = Array.isArray(world?.biomesData?.color) ? world.biomesData.color : [];
   const palette = new Map();
