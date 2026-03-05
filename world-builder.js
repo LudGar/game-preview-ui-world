@@ -182,7 +182,7 @@ function getRoadPointHeightMeters(point, cells) {
   return yForCell({
     isLand,
     elevation: Number(cell.h || 0),
-  }) + 0.95;
+  }) + 1;
 }
 
 function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
