@@ -290,7 +290,9 @@ camera.position.set(0, 1.6, 4.25);
 scene.add(camera);
 
 const controls = new OrbitControls(camera, worldRenderer.domElement);
-controls.enableDamping = true;
+// Damping makes camera rotation continue briefly after input stops, which can
+// read as "rubberbanding" on thin geometry like roads.
+controls.enableDamping = false;
 controls.target.set(0, 1.05, 0);
 controls.minDistance = 1.2;
 controls.maxDistance = 100;
