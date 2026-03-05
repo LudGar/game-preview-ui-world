@@ -579,6 +579,8 @@ let worldMapToPlane = null;
 let worldClampPlanePosition = null;
 let worldSetLodFromPosition = null;
 let worldGetCellViewFromPosition = null;
+let worldGetRenderOptions = null;
+let worldSetRenderOptions = null;
 
 const tooltip = createTooltip();
 
@@ -671,6 +673,11 @@ function renderHtmlPanel() {
   else if (activeTab === "settings") {
     uiCleanup = buildSettingsTab(panel, {
       seed,
+      renderOptions: worldGetRenderOptions?.() || null,
+      onRenderOptionChange: (key, enabled) => {
+        if (!worldSetRenderOptions) return;
+        worldSetRenderOptions({ [key]: enabled });
+      },
       onQuit: () => {
         // Quit returns to main flow: main menu -> save files
         appState = "mainMenu";
@@ -792,6 +799,8 @@ async function init() {
     worldClampPlanePosition = mapSpace?.clampPlanePosition || null;
     worldSetLodFromPosition = builtWorld?.setActiveCellFromPlanePosition || null;
     worldGetCellViewFromPosition = builtWorld?.getCellViewForPlanePosition || null;
+    worldGetRenderOptions = builtWorld?.getRenderOptions || null;
+    worldSetRenderOptions = builtWorld?.setRenderOptions || null;
 
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
     const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;
