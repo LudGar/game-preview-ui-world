@@ -216,9 +216,15 @@ function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
     roughness: 0.97,
     metalness: 0.01,
     side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+    depthWrite: false,
   });
-
-  return new THREE.Mesh(geometry, material);
+  
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 12;
+  return mesh;
 }
 
 function getRiverPointHeightMeters(cell) {
