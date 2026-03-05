@@ -26,6 +26,15 @@ const TABS = [
 const WORLD_LAYER = 0;
 const UI_CHAR_LAYER = 3;
 
+const DEFAULT_WORLD_RENDER_VISIBILITY = {
+  terrain: true,
+  oceans: true,
+  roads: true,
+  settlements: true,
+  rivers: true,
+  cells: false,
+};
+
 /* ===========================================================
    DOM helpers
 =========================================================== */
@@ -579,6 +588,8 @@ let worldMapToPlane = null;
 let worldClampPlanePosition = null;
 let worldSetLodFromPosition = null;
 let worldGetCellViewFromPosition = null;
+let worldSetRenderVisibility = null;
+let worldRenderVisibility = { ...DEFAULT_WORLD_RENDER_VISIBILITY };
 
 const tooltip = createTooltip();
 
@@ -620,8 +631,14 @@ function renderHtmlPanel() {
   if (appState === "saveFiles") {
     uiCleanup = buildSaveFiles(panel, {
       saves: savesCache,
-      onPickSave: (id) => {
+      onPickSave: async (id) => {
         activeSaveId = id;
+        const uiState = db ? await getUiState(db, id) : null;
+        worldRenderVisibility = {
+          ...DEFAULT_WORLD_RENDER_VISIBILITY,
+          ...(uiState?.worldRenderVisibility || {}),
+        };
+        worldSetRenderVisibility?.(worldRenderVisibility);
         appState = "game";
         activeTab = "map";
         applyPresentationForTab(activeTab);
@@ -671,6 +688,17 @@ function renderHtmlPanel() {
   else if (activeTab === "settings") {
     uiCleanup = buildSettingsTab(panel, {
       seed,
+      worldRenderVisibility,
+      onSetWorldRenderVisibility: async (nextVisibility) => {
+        worldRenderVisibility = {
+          ...DEFAULT_WORLD_RENDER_VISIBILITY,
+          ...(nextVisibility || {}),
+        };
+        worldSetRenderVisibility?.(worldRenderVisibility);
+        if (db && activeSaveId) {
+          await setUiState(db, activeSaveId, { worldRenderVisibility });
+        }
+      },
       onQuit: () => {
         // Quit returns to main flow: main menu -> save files
         appState = "mainMenu";
@@ -792,6 +820,14 @@ async function init() {
     worldClampPlanePosition = mapSpace?.clampPlanePosition || null;
     worldSetLodFromPosition = builtWorld?.setActiveCellFromPlanePosition || null;
     worldGetCellViewFromPosition = builtWorld?.getCellViewForPlanePosition || null;
+    worldSetRenderVisibility = builtWorld?.setRenderVisibility || null;
+
+    const uiState = activeSaveId ? await getUiState(db, activeSaveId) : null;
+    worldRenderVisibility = {
+      ...DEFAULT_WORLD_RENDER_VISIBILITY,
+      ...(uiState?.worldRenderVisibility || {}),
+    };
+    worldSetRenderVisibility?.(worldRenderVisibility);
 
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
     const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;

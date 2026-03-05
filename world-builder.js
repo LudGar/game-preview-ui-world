@@ -210,6 +210,60 @@ function makeRoadMesh({ routes, cells, converters, widthMeters = 12 }) {
     color: 0x685f56,
     roughness: 0.97,
     metalness: 0.01,
+    side: THREE.DoubleSide,
+  });
+
+  return new THREE.Mesh(geometry, material);
+}
+
+function getRiverPointHeightMeters(cell) {
+  if (!cell) return 0.4;
+  const isLand = Number(cell.h || 0) > 19;
+  return yForCell({
+    isLand,
+    elevation: Number(cell.h || 0),
+  }) + 0.45;
+}
+
+function makeRiverMesh({ rivers, cells, converters }) {
+  if (!Array.isArray(rivers) || rivers.length === 0) return null;
+
+  const positions = [];
+
+  for (const river of rivers) {
+    if (!river || !Array.isArray(river.cells) || river.cells.length < 2) continue;
+
+    const riverWidthKm = Number(river.width || 0.08);
+    const widthMeters = THREE.MathUtils.clamp(riverWidthKm * METERS_PER_KM, 40, 850);
+    const halfWidth = widthMeters * 0.5;
+
+    for (let i = 0; i < river.cells.length - 1; i += 1) {
+      const aCell = cells?.[river.cells[i]];
+      const bCell = cells?.[river.cells[i + 1]];
+      const aPos = aCell?.p;
+      const bPos = bCell?.p;
+      if (!Array.isArray(aPos) || !Array.isArray(bPos)) continue;
+
+      const start = converters.mapToPlane(Number(aPos[0]), Number(aPos[1]));
+      const end = converters.mapToPlane(Number(bPos[0]), Number(bPos[1]));
+      const segmentY = Math.max(getRiverPointHeightMeters(aCell), getRiverPointHeightMeters(bCell));
+      pushRoadSegmentQuad({ positions, start, end, halfWidth, y: segmentY });
+    }
+  }
+
+  if (positions.length === 0) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x4fa9df,
+    roughness: 0.3,
+    metalness: 0.02,
+    transparent: true,
+    opacity: 0.9,
+    side: THREE.DoubleSide,
   });
 
   return new THREE.Mesh(geometry, material);
@@ -225,6 +279,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const cells = Array.isArray(pack?.cells) ? pack.cells : [];
   const burgs = Array.isArray(pack?.burgs) ? pack.burgs : [];
   const routes = Array.isArray(pack?.routes) ? pack.routes : [];
+  const rivers = Array.isArray(pack?.rivers) ? pack.rivers : [];
   const biomePalette = parseBiomePalette(world);
 
   const fallbackSize = getWorldSizePxFromKm(world);
@@ -249,6 +304,17 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
   const loadedCellGroup = new THREE.Group();
   worldRoot.add(loadedCellGroup);
+
+  const featureGroups = {
+    terrain: new THREE.Group(),
+    oceans: new THREE.Group(),
+    roads: new THREE.Group(),
+    settlements: new THREE.Group(),
+    rivers: new THREE.Group(),
+    cells: new THREE.Group(),
+  };
+
+  Object.values(featureGroups).forEach((group) => loadedCellGroup.add(group));
 
   const cellData = [];
 
@@ -319,6 +385,15 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
+      side: THREE.DoubleSide,
+    }),
+    water: new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.35,
+      metalness: 0.02,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
     }),
   };
 
@@ -328,6 +403,8 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
   const landPositions = [];
   const landColors = [];
+  const waterPositions = [];
+  const waterColors = [];
   for (let idx = 0; idx < cellData.length; idx += 1) {
     const data = cellData[idx];
     if (!data) continue;
@@ -338,15 +415,24 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       elevation: data.elevation,
     });
 
-    if (!data.isLand) continue;
-
-    pushCellTriangles({
-      positions: landPositions,
-      colors: landColors,
-      polygon: data.planePolygon,
-      y: yForCell(data),
-      color,
-    });
+    if (data.isLand) {
+      pushCellTriangles({
+        positions: landPositions,
+        colors: landColors,
+        polygon: data.planePolygon,
+        y: yForCell(data),
+        color,
+      });
+    } else {
+      pushCellTriangles({
+        positions: waterPositions,
+        colors: waterColors,
+        polygon: data.planePolygon,
+        y: yForCell(data),
+        color,
+      });
+      continue;
+    }
 
     const borderHeight = yForCell(data) + (data.isLand ? 0.4 : 0.25);
     const ringPoints = data.planePolygon.map((p) => new THREE.Vector3(p.x, borderHeight, p.y));
@@ -354,7 +440,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       new THREE.BufferGeometry().setFromPoints(ringPoints),
       borderMaterials.land
     );
-    loadedCellGroup.add(border);
+    featureGroups.cells.add(border);
 
     const localBurgs = settlementByCell.get(idx) || [];
     for (const b of localBurgs) {
@@ -363,15 +449,22 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       const pos = converters.mapToPlane(b.x, b.y);
       const marker = new THREE.Mesh(markerGeo, mat);
       marker.position.set(pos.x, 1200, pos.z);
-      loadedCellGroup.add(marker);
+      featureGroups.settlements.add(marker);
     }
   }
 
   if (landPositions.length > 0) {
-    loadedCellGroup.add(makeTerrainMesh({ positions: landPositions, colors: landColors, material: terrainMaterials.land }));
+    featureGroups.terrain.add(makeTerrainMesh({ positions: landPositions, colors: landColors, material: terrainMaterials.land }));
   }
+  if (waterPositions.length > 0) {
+    featureGroups.oceans.add(makeTerrainMesh({ positions: waterPositions, colors: waterColors, material: terrainMaterials.water }));
+  }
+
+  const riversMesh = makeRiverMesh({ rivers, cells, converters });
+  if (riversMesh) featureGroups.rivers.add(riversMesh);
+
   const roadsMesh = makeRoadMesh({ routes, cells, converters, widthMeters: 12 });
-  if (roadsMesh) loadedCellGroup.add(roadsMesh);
+  if (roadsMesh) featureGroups.roads.add(roadsMesh);
 
   function findCellByMapPoint(x, y) {
     const tryIndices = [];
@@ -426,6 +519,18 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     };
   }
 
+
+  function setRenderVisibility({ terrain = true, oceans = true, roads = true, settlements = true, rivers = true, cells = false } = {}) {
+    featureGroups.terrain.visible = !!terrain;
+    featureGroups.oceans.visible = !!oceans;
+    featureGroups.roads.visible = !!roads;
+    featureGroups.settlements.visible = !!settlements;
+    featureGroups.rivers.visible = !!rivers;
+    featureGroups.cells.visible = !!cells;
+  }
+
+  setRenderVisibility();
+
   scene.add(worldRoot);
 
   return {
@@ -446,6 +551,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     setActiveCellFromPlanePosition,
     getCellViewForPlanePosition,
     settlementPositions,
+    setRenderVisibility,
     cleanup() {
       scene.remove(worldRoot);
       worldRoot.traverse((obj) => {
@@ -460,6 +566,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       mats.city.dispose();
       mats.town.dispose();
       terrainMaterials.land.dispose();
+      terrainMaterials.water.dispose();
       borderMaterials.land.dispose();
     },
   };

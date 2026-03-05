@@ -25,7 +25,46 @@ function mkBtn(label) {
   return b;
 }
 
-export function buildSettingsTab(panel, { seed, onQuit, onBackToMainMenu, onSwitchCharacter }) {
+function mkToggleRow({ label, checked, onChange }) {
+  const row = document.createElement("label");
+  row.style.display = "flex";
+  row.style.alignItems = "center";
+  row.style.justifyContent = "space-between";
+  row.style.gap = "12px";
+  row.style.padding = "10px 12px";
+  row.style.borderRadius = "12px";
+  row.style.border = "1px solid rgba(255,255,255,0.10)";
+  row.style.background = "rgba(8,10,13,0.45)";
+  row.style.maxWidth = "380px";
+
+  const text = document.createElement("span");
+  text.textContent = label;
+  text.style.font = "700 12px system-ui";
+  text.style.letterSpacing = "0.05em";
+  text.style.color = "rgba(255,255,255,0.9)";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = !!checked;
+  input.style.width = "18px";
+  input.style.height = "18px";
+  input.style.cursor = "pointer";
+
+  input.addEventListener("change", () => onChange?.(input.checked));
+
+  row.appendChild(text);
+  row.appendChild(input);
+  return row;
+}
+
+export function buildSettingsTab(panel, {
+  seed,
+  onQuit,
+  onBackToMainMenu,
+  onSwitchCharacter,
+  worldRenderVisibility,
+  onSetWorldRenderVisibility,
+}) {
   panel.innerHTML = `
     <div style="display:flex; flex-direction:column; height:100%;">
       <div style="
@@ -39,9 +78,15 @@ export function buildSettingsTab(panel, { seed, onQuit, onBackToMainMenu, onSwit
         <div style="font:600 12px system-ui; opacity:0.65;">seed: ${htmlEscape(seed)}</div>
       </div>
 
-      <div style="flex:1; padding:16px; display:flex; flex-direction:column; gap:12px;">
+      <div style="flex:1; padding:16px; display:flex; flex-direction:column; gap:12px; overflow:auto;">
         <div style="color:rgba(255,255,255,0.70); font:600 13px system-ui;">
-          Actions (placeholder).
+          World render layers.
+        </div>
+
+        <div id="settingsWorldToggles" style="display:flex; flex-direction:column; gap:8px;"></div>
+
+        <div style="margin-top:6px; color:rgba(255,255,255,0.70); font:600 13px system-ui;">
+          Actions.
         </div>
 
         <div id="settingsBtns" style="display:flex; flex-direction:column; gap:10px; max-width:380px;"></div>
@@ -53,7 +98,38 @@ export function buildSettingsTab(panel, { seed, onQuit, onBackToMainMenu, onSwit
     </div>
   `;
 
+  const togglesBox = panel.querySelector("#settingsWorldToggles");
   const box = panel.querySelector("#settingsBtns");
+
+  const current = {
+    terrain: worldRenderVisibility?.terrain ?? true,
+    oceans: worldRenderVisibility?.oceans ?? true,
+    roads: worldRenderVisibility?.roads ?? true,
+    settlements: worldRenderVisibility?.settlements ?? true,
+    rivers: worldRenderVisibility?.rivers ?? true,
+    cells: worldRenderVisibility?.cells ?? false,
+  };
+
+  const toggleDefs = [
+    ["terrain", "SHOW TERRAIN"],
+    ["oceans", "SHOW OCEANS"],
+    ["roads", "SHOW ROADS"],
+    ["settlements", "SHOW SETTLEMENTS / BURGS"],
+    ["rivers", "SHOW RIVERS"],
+    ["cells", "SHOW CELL BORDERS"],
+  ];
+
+  for (const [key, label] of toggleDefs) {
+    const row = mkToggleRow({
+      label,
+      checked: current[key],
+      onChange: (checked) => {
+        current[key] = checked;
+        onSetWorldRenderVisibility?.({ ...current });
+      },
+    });
+    togglesBox.appendChild(row);
+  }
 
   const bQuit = mkBtn("QUIT");
   const bMain = mkBtn("BACK TO MAIN MENU");
