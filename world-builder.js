@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { loadCachedBurgForCell, saveCachedBurgForCell } from "./burgs-store.js";
 
 const WORLD_WIDTH_KM = 42315;
 const WORLD_HEIGHT_KM = 18855;
@@ -88,6 +89,25 @@ function makeMapSpaceConverters({ widthPx, heightPx, widthMeters, heightMeters }
 function setObjectVisibility(object3d, visible) {
   if (!object3d) return;
   object3d.visible = !!visible;
+}
+
+function makeGeneratedBurgFromCell({ cellIndex, cell, existingBurgsInCell }) {
+  if (!cell || !Array.isArray(cell.p)) return null;
+  if (Array.isArray(existingBurgsInCell) && existingBurgsInCell.length > 0) return null;
+
+  const basePop = 0.6 + ((cellIndex * 37) % 140) / 100;
+  return {
+    i: 100000 + cellIndex,
+    cell: cellIndex,
+    name: `Burg ${cellIndex}`,
+    x: Number(cell.p[0]),
+    y: Number(cell.p[1]),
+    population: Number(basePop.toFixed(3)),
+    capital: false,
+    state: Number.isInteger(cell.state) ? cell.state : 0,
+    culture: Number.isInteger(cell.culture) ? cell.culture : 0,
+    type: basePop >= 1.35 ? "City" : "Town",
+  };
 }
 
 function parseBiomePalette(world) {
@@ -357,6 +377,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   }
 
   const settlementByCell = new Map();
+  const settlementMarkersByCell = new Map();
   const settlementPositions = [];
   for (const b of burgs) {
     if (!b || b.removed || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
@@ -460,6 +481,10 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       const marker = new THREE.Mesh(markerGeo, mat);
       marker.position.set(pos.x, 1200, pos.z);
       renderLayers.settlements.add(marker);
+
+      const markerList = settlementMarkersByCell.get(idx) || [];
+      markerList.push(marker);
+      settlementMarkersByCell.set(idx, markerList);
     }
   }
 
@@ -527,7 +552,45 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     const nextActive = findCellByMapPoint(map.x, map.y);
     if (nextActive < 0) return;
 
+    if (nextActive !== activeCellIndex) {
+      void handleCellEntered(nextActive);
+    }
+
     activeCellIndex = nextActive;
+  }
+
+  async function handleCellEntered(cellIndex) {
+    const cell = cells[cellIndex];
+    if (!cell) return;
+
+    const cachedBurg = await loadCachedBurgForCell(cellIndex);
+    const existing = settlementByCell.get(cellIndex) || [];
+    const generatedBurg = makeGeneratedBurgFromCell({
+      cellIndex,
+      cell,
+      existingBurgsInCell: existing,
+    });
+    const discovered = cachedBurg || existing[0] || generatedBurg;
+    if (!discovered) return;
+
+    if (!cachedBurg && discovered.cell === cellIndex) {
+      void saveCachedBurgForCell(cellIndex, discovered);
+    }
+
+    const markers = settlementMarkersByCell.get(cellIndex) || [];
+    for (const marker of markers) marker.visible = false;
+
+    const pos = converters.mapToPlane(discovered.x, discovered.y);
+    window.dispatchEvent(
+      new CustomEvent("world:burg-discovered", {
+        detail: {
+          ...discovered,
+          mapX: Number(discovered.x),
+          mapY: Number(discovered.y),
+          position: { x: pos.x, y: 0, z: pos.z },
+        },
+      })
+    );
   }
 
   function getCellViewForPlanePosition(position) {
