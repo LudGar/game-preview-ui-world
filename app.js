@@ -25,7 +25,7 @@ const TABS = [
 
 const WORLD_LAYER = 0;
 const UI_CHAR_LAYER = 3;
-const LOCAL_CITY_GENERATOR_BASE = "/mfcg/";
+const LOCAL_CITY_GENERATOR_BASE = new URL("mfcg/index.html", window.location.href).toString();
 
 function boolFlag(v) {
   return Number(v) > 0 ? 1 : 0;
@@ -42,24 +42,30 @@ function buildMfcgCityUrl({ mapSeed, burg, cell }) {
 
   const coast = Number(burg?.port || 0) > 0;
   const river = Number(cell?.r || 0) > 0;
+  const burgName = String(burg?.name || `Burg ${burgId}`);
 
-  const params = new URLSearchParams({
-    size: "25",
-    seed,
-    citadel: String(boolFlag(burg?.citadel)),
-    urban_castle: String(boolFlag(burg?.capital)),
-    plaza: String(boolFlag(burg?.plaza)),
-    temple: String(boolFlag(burg?.temple)),
-    walls: String(boolFlag(burg?.walls)),
-    shantytown: String(boolFlag(burg?.shanty)),
-    coast: String(coast ? 1 : 0),
-    river: String(river ? 1 : 0),
-    greens: "1",
-    gates: "-1",
-    sea: toSeaValue(coast),
-  });
+  const params = [
+    ["size", "25"],
+    ["seed", seed],
+    ["name", burgName],
+    ["citadel", String(boolFlag(burg?.citadel))],
+    ["urban_castle", String(boolFlag(burg?.capital))],
+    ["plaza", String(boolFlag(burg?.plaza))],
+    ["temple", String(boolFlag(burg?.temple))],
+    ["walls", String(boolFlag(burg?.walls))],
+    ["shantytown", String(boolFlag(burg?.shanty))],
+    ["coast", String(coast ? 1 : 0)],
+    ["river", String(river ? 1 : 0)],
+    ["greens", "1"],
+    ["gates", "-1"],
+    ["sea", toSeaValue(coast)],
+  ];
 
-  return `${LOCAL_CITY_GENERATOR_BASE}?${params.toString()}`;
+  const query = params
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
+
+  return `${LOCAL_CITY_GENERATOR_BASE}?${query}`;
 }
 
 /* ===========================================================
@@ -187,10 +193,10 @@ function ensureBurgPreviewWindow() {
   panel.innerHTML = `
     <header style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.10); display:flex; justify-content:space-between; align-items:center; gap:10px;">
       <div style="font:700 12px/1.2 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(255,255,255,0.95); letter-spacing:0.07em;">NEAREST BURG — CITY PREVIEW</div>
-      <a id="burgPreviewOpen" href="/mfcg/" target="_blank" rel="noopener noreferrer" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#c6e0ff; text-decoration:none;">open</a>
+      <a id="burgPreviewOpen" href="${LOCAL_CITY_GENERATOR_BASE}" target="_blank" rel="noopener noreferrer" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#c6e0ff; text-decoration:none;">open</a>
     </header>
     <div id="burgPreviewMeta" style="padding:8px 12px; font:500 12px/1.25 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(220,230,240,0.9); border-bottom:1px solid rgba(255,255,255,0.08); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Waiting for cell discovery…</div>
-    <iframe id="burgPreviewFrame" title="Nearest burg city generator" src="/mfcg/" style="flex:1; border:0; width:100%; background:#0b0f13;"></iframe>
+    <iframe id="burgPreviewFrame" title="Nearest burg city generator" src="${LOCAL_CITY_GENERATOR_BASE}" style="flex:1; border:0; width:100%; background:#0b0f13;"></iframe>
   `;
 
   document.body.appendChild(panel);
