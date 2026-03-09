@@ -554,10 +554,19 @@ function setOverlayLightingEnabled(enabled) {
   }
 }
 
+function syncCharacterVisibility() {
+  const hideCharacterInSettings = appState === "game" && uiOpen && activeTab === "settings";
+  const showCharacter = !hideCharacterInSettings;
+
+  characterWorld.visible = showCharacter;
+  characterUi.visible = uiOpen && showCharacter;
+  setOverlayLightingEnabled(characterUi.visible);
+  overlayCanvas.style.opacity = characterUi.visible ? "1" : "0";
+}
+
 function setUiMode(isOpen) {
-  characterUi.visible = isOpen;
-  setOverlayLightingEnabled(isOpen);
-  overlayCanvas.style.opacity = isOpen ? "1" : "0";
+  uiOpen = isOpen;
+  syncCharacterVisibility();
   overlayCanvas.style.transition = "opacity 160ms ease";
   motionHud.style.display = isOpen || appState !== "game" ? "none" : "block";
 }
@@ -598,6 +607,7 @@ function cleanupPanel() {
 function renderHtmlPanel() {
   const panel = ensureUiPanel();
   setPanelVisible(panel, uiOpen);
+  syncCharacterVisibility();
 
   cleanupPanel();
 
