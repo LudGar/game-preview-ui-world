@@ -216,9 +216,30 @@ function ensureBurgPreviewWindow() {
 
   const downloadOneBtn = panel.querySelector("#burgPreviewDownloadOne");
   downloadOneBtn?.addEventListener("click", async () => {
+    const frame = panel.querySelector("#burgPreviewFrame");
     const cellId = Number(activePreviewBurg?.cell);
-    if (!Number.isInteger(cellId) || cellId < 0) return;
-    await downloadJsonFromApi(`/api/export/cities/${cellId}.json`, `burg-${cellId}.json`);
+    if (!frame || !Number.isInteger(cellId) || cellId < 0) return;
+
+    const city = readCityJsonFromMfcgFrame(frame);
+    if (!city || typeof city !== "object") {
+      const originalText = downloadOneBtn.textContent;
+      downloadOneBtn.textContent = "city not ready";
+      window.setTimeout(() => {
+        downloadOneBtn.textContent = originalText || "save json";
+      }, 1200);
+      return;
+    }
+
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      mapSeed: String(worldMapSeed || "0000"),
+      cell: activePreviewBurg?.cell ?? cellId,
+      id: activePreviewBurg?.i ?? null,
+      name: activePreviewBurg?.name ?? null,
+      city,
+    };
+
+    triggerJsonDownload({ text: JSON.stringify(payload, null, 2), fileName: `burg-${cellId}.json` });
   });
 
   const downloadAllBtn = panel.querySelector("#burgPreviewDownloadAll");
@@ -321,23 +342,6 @@ function waitForFrameLoad(frame, timeoutMs = BULK_BURG_EXPORT_LOAD_TIMEOUT_MS) {
   });
 }
 
-function triggerMfcgJsonDownload(frame) {
-  if (!frame) return false;
-
-  try {
-    const win = frame.contentWindow;
-    if (!win) return false;
-    if (typeof win.be?.asJSON === "function") {
-      win.be.asJSON();
-      return true;
-    }
-  } catch {
-    return false;
-  }
-
-  return false;
-}
-
 async function exportAllBurgsFromPreview(panel, btn) {
   const frame = panel.querySelector("#burgPreviewFrame");
   if (!frame) return { ok: false, reason: "preview unavailable" };
@@ -351,6 +355,8 @@ async function exportAllBurgsFromPreview(panel, btn) {
 
   if (!targets.length) return { ok: false, reason: "no burgs found" };
 
+  const exported = [];
+
   for (let index = 0; index < targets.length; index += 1) {
     const target = targets[index];
     activePreviewBurg = target.burg;
@@ -361,11 +367,29 @@ async function exportAllBurgsFromPreview(panel, btn) {
     if (!loaded) continue;
 
     await waitForMs(BULK_BURG_EXPORT_RENDER_DELAY_MS);
-    triggerMfcgJsonDownload(frame);
+    const city = readCityJsonFromMfcgFrame(frame);
+    if (city && typeof city === "object") {
+      exported.push({
+        id: target.burg?.i ?? null,
+        cell: target.burg?.cell ?? null,
+        name: target.burg?.name ?? null,
+        city,
+      });
+    }
     await waitForMs(BULK_BURG_EXPORT_BETWEEN_DELAY_MS);
   }
 
-  btn.textContent = "saved all";
+  if (!exported.length) return { ok: false, reason: "no city json exported" };
+
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    mapSeed: String(worldMapSeed || "0000"),
+    total: exported.length,
+    cities: exported,
+  };
+  triggerJsonDownload({ text: JSON.stringify(payload, null, 2), fileName: "all-burgs.json" });
+
+  btn.textContent = `saved ${exported.length}`;
   window.setTimeout(() => {
     btn.textContent = "save all burgs";
   }, 1000);
@@ -487,30 +511,6 @@ async function exportAllBurgsHeadless(btn) {
     btn.textContent = "headless save all";
   }, 1200);
   return { ok: true };
-}
-
-async function downloadJsonFromApi(endpoint, fallbackName) {
-  try {
-    const res = await fetch(endpoint);
-    if (!res.ok) return false;
-
-    const blob = await res.blob();
-    const disposition = res.headers.get("content-disposition") || "";
-    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
-    const fileName = (match && match[1]) ? match[1] : fallbackName;
-
-    const href = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = href;
-    a.download = fileName || fallbackName || "cities.json";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.setTimeout(() => URL.revokeObjectURL(href), 1500);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function updateBurgPreviewWindow({ mapSeed, burg, cell }) {
