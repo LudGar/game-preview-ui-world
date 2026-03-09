@@ -32,6 +32,7 @@ const AFMG_MAP_SOURCE = new URL("afmg/Praneland%20Full%202025-12-28-23-09.json",
 const BULK_BURG_EXPORT_LOAD_TIMEOUT_MS = 10000;
 const BULK_BURG_EXPORT_RENDER_DELAY_MS = 650;
 const BULK_BURG_EXPORT_BETWEEN_DELAY_MS = 300;
+const BULK_BURG_HEADLESS_RENDER_TIMEOUT_MS = 12000;
 
 function boolFlag(v) {
   return Number(v) > 0 ? 1 : 0;
@@ -203,6 +204,7 @@ function ensureBurgPreviewWindow() {
       <div style="display:flex; align-items:center; gap:8px;">
         <button id="burgPreviewDownloadOne" type="button" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#e8f4ff; background:rgba(70,120,180,0.35); border:1px solid rgba(170,210,255,0.45); border-radius:9px; padding:6px 8px; cursor:pointer;">save json</button>
         <button id="burgPreviewDownloadAll" type="button" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#e8f4ff; background:rgba(90,120,90,0.35); border:1px solid rgba(190,230,190,0.45); border-radius:9px; padding:6px 8px; cursor:pointer;">save all burgs</button>
+        <button id="burgPreviewDownloadAllHeadless" type="button" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#e8f4ff; background:rgba(140,90,180,0.35); border:1px solid rgba(215,190,245,0.45); border-radius:9px; padding:6px 8px; cursor:pointer;">headless save all</button>
         <a id="burgPreviewOpen" href="${LOCAL_CITY_GENERATOR_BASE}" target="_blank" rel="noopener noreferrer" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#c6e0ff; text-decoration:none;">open</a>
       </div>
     </header>
@@ -241,6 +243,31 @@ function ensureBurgPreviewWindow() {
       downloadAllBtn.disabled = false;
       downloadAllBtn.style.opacity = "1";
       downloadAllBtn.style.cursor = "pointer";
+    }
+  });
+
+  const downloadAllHeadlessBtn = panel.querySelector("#burgPreviewDownloadAllHeadless");
+  downloadAllHeadlessBtn?.addEventListener("click", async () => {
+    if (isBulkBurgExportRunning) return;
+    isBulkBurgExportRunning = true;
+    const originalText = downloadAllHeadlessBtn.textContent;
+    downloadAllHeadlessBtn.disabled = true;
+    downloadAllHeadlessBtn.style.opacity = "0.6";
+    downloadAllHeadlessBtn.style.cursor = "progress";
+
+    try {
+      const result = await exportAllBurgsHeadless(downloadAllHeadlessBtn);
+      if (!result.ok) {
+        downloadAllHeadlessBtn.textContent = result.reason || "headless save all";
+        window.setTimeout(() => {
+          downloadAllHeadlessBtn.textContent = originalText || "headless save all";
+        }, 1400);
+      }
+    } finally {
+      isBulkBurgExportRunning = false;
+      downloadAllHeadlessBtn.disabled = false;
+      downloadAllHeadlessBtn.style.opacity = "1";
+      downloadAllHeadlessBtn.style.cursor = "pointer";
     }
   });
 
@@ -343,6 +370,122 @@ async function exportAllBurgsFromPreview(panel, btn) {
     btn.textContent = "save all burgs";
   }, 1000);
 
+  return { ok: true };
+}
+
+function waitForFrameExportReady(frame, timeoutMs = BULK_BURG_HEADLESS_RENDER_TIMEOUT_MS) {
+  if (!frame) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    let done = false;
+    const startedAt = performance.now();
+
+    function finish(status) {
+      if (done) return;
+      done = true;
+      resolve(status);
+    }
+
+    function checkReady() {
+      if (done) return;
+      try {
+        const win = frame.contentWindow;
+        const editor = win?.com?.watabou?.mfcg?.ui?.base?.Editor?.instance || win?.Ub?.instance;
+        const exporter = win?.com?.watabou?.mfcg?.export?.JsonExporter || win?.kg;
+        if (editor && typeof exporter?.export === "function") {
+          finish(true);
+          return;
+        }
+      } catch {
+        finish(false);
+        return;
+      }
+
+      if (performance.now() - startedAt >= timeoutMs) {
+        finish(false);
+        return;
+      }
+      window.requestAnimationFrame(checkReady);
+    }
+
+    checkReady();
+  });
+}
+
+function triggerJsonDownload({ text, fileName }) {
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = fileName || "all-burgs.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(href), 1500);
+}
+
+async function exportAllBurgsHeadless(btn) {
+  let targets = [];
+  try {
+    targets = await loadAllBurgPreviewTargets();
+  } catch {
+    return { ok: false, reason: "world data unavailable" };
+  }
+  if (!targets.length) return { ok: false, reason: "no burgs found" };
+
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.tabIndex = -1;
+  frame.style.position = "fixed";
+  frame.style.width = "1px";
+  frame.style.height = "1px";
+  frame.style.left = "-9999px";
+  frame.style.bottom = "-9999px";
+  frame.style.opacity = "0";
+
+  document.body.appendChild(frame);
+  const exported = [];
+
+  try {
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      btn.textContent = `headless ${index + 1}/${targets.length}`;
+      frame.src = buildMfcgCityUrl({ mapSeed: worldMapSeed, burg: target.burg, cell: target.cell });
+
+      const loaded = await waitForFrameLoad(frame);
+      if (!loaded) continue;
+
+      const ready = await waitForFrameExportReady(frame);
+      if (!ready) continue;
+
+      const city = readCityJsonFromMfcgFrame(frame);
+      if (city && typeof city === "object") {
+        exported.push({
+          id: target.burg?.i ?? null,
+          cell: target.burg?.cell ?? null,
+          name: target.burg?.name ?? null,
+          city,
+        });
+      }
+    }
+  } finally {
+    frame.remove();
+  }
+
+  if (!exported.length) return { ok: false, reason: "no city json exported" };
+
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    mapSeed: String(worldMapSeed || "0000"),
+    total: exported.length,
+    cities: exported,
+  };
+
+  triggerJsonDownload({ text: JSON.stringify(payload, null, 2), fileName: "all-burgs-headless.json" });
+  btn.textContent = `headless saved ${exported.length}`;
+  window.setTimeout(() => {
+    btn.textContent = "headless save all";
+  }, 1200);
   return { ok: true };
 }
 
