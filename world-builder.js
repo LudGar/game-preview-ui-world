@@ -585,6 +585,13 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       new CustomEvent("world:burg-discovered", {
         detail: {
           ...discovered,
+          cell: cellIndex,
+          mfcgCell: {
+            r: Number(cell?.r || 0),
+          },
+          mfcgBurg: {
+            ...(existing[0] || discovered),
+          },
           mapX: Number(discovered.x),
           mapY: Number(discovered.y),
           position: { x: pos.x, y: 0, z: pos.z },

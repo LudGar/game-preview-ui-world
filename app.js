@@ -25,6 +25,42 @@ const TABS = [
 
 const WORLD_LAYER = 0;
 const UI_CHAR_LAYER = 3;
+const LOCAL_CITY_GENERATOR_BASE = "/mfcg/";
+
+function boolFlag(v) {
+  return Number(v) > 0 ? 1 : 0;
+}
+
+function toSeaValue(coast) {
+  return coast ? "0.2" : "0";
+}
+
+function buildMfcgCityUrl({ mapSeed, burg, cell }) {
+  const safeSeed = /^\d+$/.test(String(mapSeed || "").trim()) ? String(mapSeed).trim() : "0000";
+  const burgId = Number(burg?.i || 0);
+  const seed = `${safeSeed}${String(burgId).padStart(4, "0")}`;
+
+  const coast = Number(burg?.port || 0) > 0;
+  const river = Number(cell?.r || 0) > 0;
+
+  const params = new URLSearchParams({
+    size: "25",
+    seed,
+    citadel: String(boolFlag(burg?.citadel)),
+    urban_castle: String(boolFlag(burg?.capital)),
+    plaza: String(boolFlag(burg?.plaza)),
+    temple: String(boolFlag(burg?.temple)),
+    walls: String(boolFlag(burg?.walls)),
+    shantytown: String(boolFlag(burg?.shanty)),
+    coast: String(coast ? 1 : 0),
+    river: String(river ? 1 : 0),
+    greens: "1",
+    gates: "-1",
+    sea: toSeaValue(coast),
+  });
+
+  return `${LOCAL_CITY_GENERATOR_BASE}?${params.toString()}`;
+}
 
 /* ===========================================================
    DOM helpers
@@ -124,6 +160,57 @@ function ensureUiPanel() {
 function setPanelVisible(panel, visible) {
   panel.style.opacity = visible ? "1" : "0";
   panel.style.pointerEvents = visible ? "auto" : "none";
+}
+
+function ensureBurgPreviewWindow() {
+  let panel = document.getElementById("burgPreviewWindow");
+  if (panel) return panel;
+
+  panel = document.createElement("section");
+  panel.id = "burgPreviewWindow";
+  panel.style.position = "fixed";
+  panel.style.right = "16px";
+  panel.style.bottom = "16px";
+  panel.style.width = "min(520px, 42vw)";
+  panel.style.height = "min(460px, 56vh)";
+  panel.style.display = "flex";
+  panel.style.flexDirection = "column";
+  panel.style.borderRadius = "14px";
+  panel.style.overflow = "hidden";
+  panel.style.background = "rgba(10,14,18,0.92)";
+  panel.style.border = "1px solid rgba(255,255,255,0.12)";
+  panel.style.boxShadow = "0 18px 48px rgba(0,0,0,0.45)";
+  panel.style.backdropFilter = "blur(8px)";
+  panel.style.zIndex = "9500";
+  panel.style.pointerEvents = "auto";
+
+  panel.innerHTML = `
+    <header style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.10); display:flex; justify-content:space-between; align-items:center; gap:10px;">
+      <div style="font:700 12px/1.2 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(255,255,255,0.95); letter-spacing:0.07em;">NEAREST BURG — CITY PREVIEW</div>
+      <a id="burgPreviewOpen" href="/mfcg/" target="_blank" rel="noopener noreferrer" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#c6e0ff; text-decoration:none;">open</a>
+    </header>
+    <div id="burgPreviewMeta" style="padding:8px 12px; font:500 12px/1.25 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(220,230,240,0.9); border-bottom:1px solid rgba(255,255,255,0.08); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Waiting for cell discovery…</div>
+    <iframe id="burgPreviewFrame" title="Nearest burg city generator" src="/mfcg/" style="flex:1; border:0; width:100%; background:#0b0f13;"></iframe>
+  `;
+
+  document.body.appendChild(panel);
+  return panel;
+}
+
+function updateBurgPreviewWindow({ mapSeed, burg, cell }) {
+  const panel = ensureBurgPreviewWindow();
+  const frame = panel.querySelector("#burgPreviewFrame");
+  const meta = panel.querySelector("#burgPreviewMeta");
+  const open = panel.querySelector("#burgPreviewOpen");
+  if (!frame || !meta || !open) return;
+
+  const url = buildMfcgCityUrl({ mapSeed, burg, cell });
+  const burgName = burg?.name || `Burg ${burg?.cell ?? "?"}`;
+  const burgCell = Number.isInteger(burg?.cell) ? burg.cell : "?";
+  const burgId = Number.isInteger(burg?.i) ? burg.i : "?";
+  meta.textContent = `${burgName}  •  cell ${burgCell}  •  id ${burgId}`;
+  frame.src = url;
+  open.href = url;
 }
 
 function htmlEscape(s) {
@@ -592,6 +679,7 @@ let worldSetLodFromPosition = null;
 let worldGetCellViewFromPosition = null;
 let worldGetRenderOptions = null;
 let worldSetRenderOptions = null;
+let worldMapSeed = "0000";
 let worldSettlementAnchors = [];
 
 const tooltip = createTooltip();
@@ -607,7 +695,9 @@ function cleanupPanel() {
 
 function renderHtmlPanel() {
   const panel = ensureUiPanel();
+  const burgPreview = ensureBurgPreviewWindow();
   setPanelVisible(panel, uiOpen);
+  burgPreview.style.display = appState === "game" ? "flex" : "none";
   syncCharacterVisibility();
 
   cleanupPanel();
@@ -727,6 +817,13 @@ function renderHtmlPanel() {
   }
 }
 
+window.addEventListener("world:burg-discovered", (ev) => {
+  const burg = ev?.detail?.mfcgBurg || ev?.detail;
+  const cell = ev?.detail?.mfcgCell || null;
+  if (!burg) return;
+  updateBurgPreviewWindow({ mapSeed: worldMapSeed, burg, cell });
+});
+
 async function handleSetTab(tabId) {
   if (appState !== "game") return;
   activeTab = tabId;
@@ -827,6 +924,7 @@ async function init() {
     worldGetCellViewFromPosition = builtWorld?.getCellViewForPlanePosition || null;
     worldGetRenderOptions = builtWorld?.getRenderOptions || null;
     worldSetRenderOptions = builtWorld?.setRenderOptions || null;
+    worldMapSeed = String(builtWorld?.world?.info?.seed ?? "").trim() || "0000";
 
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
     worldSettlementAnchors = settlements;
