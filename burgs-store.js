@@ -33,6 +33,34 @@ function toProjectUrl(path) {
   return new URL(path, BASE_URL).toString();
 }
 
+function canUseApiRoutes() {
+  if (typeof window === "undefined") return true;
+  const { hostname } = window.location;
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+let afmgBurgIndexPromise = null;
+
+async function getAfmgBurgIndex() {
+  if (!afmgBurgIndexPromise) {
+    afmgBurgIndexPromise = (async () => {
+      const payload = await readJson(toProjectUrl("afmg/burgs/index.json"), null);
+      const listedIds = Array.isArray(payload?.cells)
+        ? payload.cells
+        : Array.isArray(payload)
+          ? payload
+          : [];
+      const index = new Set();
+      for (const id of listedIds) {
+        const parsed = Number.parseInt(id, 10);
+        if (Number.isInteger(parsed) && parsed >= 0) index.add(parsed);
+      }
+      return index;
+    })();
+  }
+  return afmgBurgIndexPromise;
+}
+
 const LOCAL_STORAGE_KEY = "gpuiw:burg-preview-cache:v1";
 
 function canUseLocalStorage() {
@@ -77,6 +105,8 @@ function setLocalBurgForCell(cellId, burg) {
 }
 
 async function loadBurgFromAfmgDir(cellId) {
+  const index = await getAfmgBurgIndex();
+  if (!index.has(cellId)) return null;
   const payload = await readJson(toProjectUrl(`afmg/burgs/${cellId}.json`), null);
   return sanitizeBurgPayload(payload?.burg || payload, cellId);
 }
@@ -91,8 +121,20 @@ export async function loadAllCachedBurgs() {
     if (normalized) mergedByCell.set(normalized.cell, normalized);
   }
 
-  const payload = await readJson(toProjectUrl("api/burgs"), { burgs: [] });
-  const fileBurgs = Array.isArray(payload?.burgs) ? payload.burgs : [];
+  const fileBurgs = [];
+
+  if (canUseApiRoutes()) {
+    const payload = await readJson(toProjectUrl("api/burgs"), { burgs: [] });
+    fileBurgs.push(...(Array.isArray(payload?.burgs) ? payload.burgs : []));
+  } else {
+    const index = await getAfmgBurgIndex();
+    for (const cellId of index) {
+      const payload = await readJson(toProjectUrl(`afmg/burgs/${cellId}.json`), null);
+      const burg = sanitizeBurgPayload(payload?.burg || payload, cellId);
+      if (burg) fileBurgs.push(burg);
+    }
+  }
+
   for (const burg of fileBurgs) {
     const normalized = sanitizeBurgPayload(burg);
     if (normalized) mergedByCell.set(normalized.cell, normalized);
