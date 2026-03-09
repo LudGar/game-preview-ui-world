@@ -749,11 +749,12 @@ function ensureCityProjectionPoints() {
     sizeAttenuation: true,
     transparent: true,
     opacity: 0.88,
+    depthTest: false,
     depthWrite: false,
   });
   const points = new THREE.Points(geometry, cityProjectionMaterial);
   points.visible = false;
-  points.renderOrder = 5;
+  points.renderOrder = 25;
   points.layers.set(WORLD_LAYER);
   scene.add(points);
   cityProjectionPoints = points;
@@ -770,17 +771,41 @@ function updateCityProjectionFromPreview() {
   const points = extractProjectedCityPoints(cityJson);
   if (!points.length) return;
 
-  const markerPos = worldMapToPlane(activePreviewBurg.x, activePreviewBurg.y);
+  const nearestAnchor = worldSettlementAnchors.reduce((best, anchor) => {
+    if (!Number.isFinite(anchor?.mapX) || !Number.isFinite(anchor?.mapY)) return best;
+    const dx = anchor.mapX - activePreviewBurg.x;
+    const dy = anchor.mapY - activePreviewBurg.y;
+    const d2 = dx * dx + dy * dy;
+    if (!best || d2 < best.d2) return { anchor, d2 };
+    return best;
+  }, null)?.anchor || null;
+
+  const markerPos = nearestAnchor?.position
+    ? nearestAnchor.position.clone()
+    : worldMapToPlane(activePreviewBurg.x, activePreviewBurg.y);
   if (!markerPos) return;
+
+  const bounds = points.reduce(
+    (acc, p) => ({
+      minX: Math.min(acc.minX, p.x),
+      minY: Math.min(acc.minY, p.y),
+      maxX: Math.max(acc.maxX, p.x),
+      maxY: Math.max(acc.maxY, p.y),
+    }),
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+  );
+  const centerX = (bounds.minX + bounds.maxX) * 0.5;
+  const centerY = (bounds.minY + bounds.maxY) * 0.5;
 
   const cityLayer = ensureCityProjectionPoints();
   const scale = 0.12;
+  const cityLift = 16;
   const positions = new Float32Array(points.length * 3);
   for (let i = 0; i < points.length; i += 1) {
-    const x = markerPos.x + points[i].x * scale;
-    const z = markerPos.z + points[i].y * scale;
+    const x = markerPos.x + (points[i].x - centerX) * scale;
+    const z = markerPos.z + (points[i].y - centerY) * scale;
     positions[i * 3] = x;
-    positions[i * 3 + 1] = 15;
+    positions[i * 3 + 1] = cityLift;
     positions[i * 3 + 2] = z;
   }
 
