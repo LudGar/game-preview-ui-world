@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs/promises");
+const { buildCitiesPayload, buildSingleCityPayload, loadMapJson } = require("./export_cities_json.cjs");
 
 const app = express();
 const ROOT = path.resolve(__dirname, "..");
@@ -84,6 +85,43 @@ app.post("/api/burgs/:cellId", express.json({ limit: "256kb" }), async (req, res
     res.json({ ok: true, burg: normalized });
   } catch (err) {
     res.status(500).json({ error: err.message || "Failed to save burg" });
+  }
+});
+
+app.get("/api/export/cities.json", async (req, res) => {
+  try {
+    const { map } = await loadMapJson();
+    const cityBaseUrl = `${req.protocol}://${req.get("host")}/mfcg/index.html`;
+    const payload = buildCitiesPayload({ map, cityBaseUrl });
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=all-burgs.json");
+    res.send(JSON.stringify(payload, null, 2));
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to export cities" });
+  }
+});
+
+app.get("/api/export/cities/:cellId.json", async (req, res) => {
+  const cellId = Number.parseInt(req.params.cellId, 10);
+  if (!Number.isInteger(cellId) || cellId < 0) return res.status(400).json({ error: "Invalid cell id" });
+
+  try {
+    const { map } = await loadMapJson();
+    const cityBaseUrl = `${req.protocol}://${req.get("host")}/mfcg/index.html`;
+    const payload = buildSingleCityPayload({ map, cellId, cityBaseUrl });
+    if (!payload) return res.status(404).json({ error: "Burg not found" });
+
+    const safeName = String(payload.city?.name || `burg-${cellId}`)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || `burg-${cellId}`;
+
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=${safeName}.json`);
+    res.send(JSON.stringify(payload, null, 2));
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to export burg" });
   }
 });
 
