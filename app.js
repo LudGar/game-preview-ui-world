@@ -209,7 +209,7 @@ function ensureBurgPreviewWindow() {
       </div>
     </header>
     <div id="burgPreviewMeta" style="padding:8px 12px; font:500 12px/1.25 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(220,230,240,0.9); border-bottom:1px solid rgba(255,255,255,0.08); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Waiting for cell discovery…</div>
-    <iframe id="burgPreviewFrame" title="Nearest burg city generator" src="${LOCAL_CITY_GENERATOR_BASE}" style="flex:1; border:0; width:100%; background:#0b0f13;"></iframe>
+    <iframe id="burgPreviewFrame" title="Nearest burg city generator" src="about:blank" style="flex:1; border:0; width:100%; background:#0b0f13;"></iframe>
   `;
 
   document.body.appendChild(panel);
@@ -525,7 +525,10 @@ function updateBurgPreviewWindow({ mapSeed, burg, cell }) {
   const burgCell = Number.isInteger(burg?.cell) ? burg.cell : "?";
   const burgId = Number.isInteger(burg?.i) ? burg.i : "?";
   meta.textContent = `${burgName}  •  cell ${burgCell}  •  id ${burgId}`;
-  frame.src = url;
+  if (lastPreviewCityUrl !== url) {
+    frame.src = url;
+    lastPreviewCityUrl = url;
+  }
   open.href = url;
 }
 
@@ -1135,6 +1138,7 @@ let worldMapSeed = "0000";
 let worldSettlementAnchors = [];
 let isBulkBurgExportRunning = false;
 let cachedBurgPreviewTargets = null;
+let lastPreviewCityUrl = "";
 
 const tooltip = createTooltip();
 
