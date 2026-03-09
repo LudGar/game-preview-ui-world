@@ -27,6 +27,12 @@ async function readJson(url, fallback = null) {
   }
 }
 
+const BASE_URL = new URL(".", import.meta.url);
+
+function toProjectUrl(path) {
+  return new URL(path, BASE_URL).toString();
+}
+
 const LOCAL_STORAGE_KEY = "gpuiw:burg-preview-cache:v1";
 
 function canUseLocalStorage() {
@@ -71,7 +77,7 @@ function setLocalBurgForCell(cellId, burg) {
 }
 
 async function loadBurgFromAfmgDir(cellId) {
-  const payload = await readJson(`/afmg/burgs/${cellId}.json`, null);
+  const payload = await readJson(toProjectUrl(`afmg/burgs/${cellId}.json`), null);
   return sanitizeBurgPayload(payload?.burg || payload, cellId);
 }
 
@@ -85,7 +91,7 @@ export async function loadAllCachedBurgs() {
     if (normalized) mergedByCell.set(normalized.cell, normalized);
   }
 
-  const payload = await readJson("/api/burgs", { burgs: [] });
+  const payload = await readJson(toProjectUrl("api/burgs"), { burgs: [] });
   const fileBurgs = Array.isArray(payload?.burgs) ? payload.burgs : [];
   for (const burg of fileBurgs) {
     const normalized = sanitizeBurgPayload(burg);
