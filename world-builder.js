@@ -372,6 +372,8 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       name: b.name || "Settlement",
       isCapital: !!b.capital,
       population: Number(b.population || 0),
+      mapX: Number(b.x),
+      mapY: Number(b.y),
       position: new THREE.Vector3(pos.x, 0, pos.z),
     });
   }

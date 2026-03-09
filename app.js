@@ -592,6 +592,7 @@ let worldSetLodFromPosition = null;
 let worldGetCellViewFromPosition = null;
 let worldGetRenderOptions = null;
 let worldSetRenderOptions = null;
+let worldSettlementAnchors = [];
 
 const tooltip = createTooltip();
 
@@ -664,7 +665,20 @@ function renderHtmlPanel() {
         if (!planarMotion.enabled || !worldMapToPlane) return;
         if (!Number.isFinite(burg?.x) || !Number.isFinite(burg?.y)) return;
 
-        const nextPos = worldMapToPlane(burg.x, burg.y);
+        const nearestAnchor = worldSettlementAnchors.reduce((best, anchor) => {
+          if (!Number.isFinite(anchor?.mapX) || !Number.isFinite(anchor?.mapY)) return best;
+          const dx = anchor.mapX - burg.x;
+          const dy = anchor.mapY - burg.y;
+          const d2 = dx * dx + dy * dy;
+          if (!best || d2 < best.d2) return { anchor, d2 };
+          return best;
+        }, null)?.anchor || null;
+
+        const nextPos = nearestAnchor?.position
+          ? nearestAnchor.position.clone()
+          : worldMapToPlane(burg.x, burg.y);
+
+        // Align city load origin to the selected settlement sphere position on X/Z.
         nextPos.y = CHARACTER_CENTER_Y_M;
         worldClampPlanePosition?.(nextPos);
 
@@ -815,6 +829,7 @@ async function init() {
     worldSetRenderOptions = builtWorld?.setRenderOptions || null;
 
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
+    worldSettlementAnchors = settlements;
     const spawn = settlements.find((s) => s.isCapital) || settlements[0] || null;
 
     if (worldPlane && spawn?.position) {
@@ -850,6 +865,7 @@ async function init() {
     }
   } catch (err) {
     console.warn("[App] World build failed; using fallback plane.", err);
+    worldSettlementAnchors = [];
     fallbackGround.visible = true;
     motionHud.style.display = "none";
   }
