@@ -1,5 +1,6 @@
 // map.js
 import { createTooltip } from "./tooltip.js";
+import { loadAllCachedBurgs } from "./burgs-store.js";
 
 function htmlEscape(s) {
   return String(s ?? "")
@@ -343,6 +344,7 @@ export function buildMapTab(
 
   let world = null;
   let markers = []; // { el, labelEl, burg, pop, isCapital, category }
+  const markerByKey = new Map();
   let selectedKey = null;
   let stateNameById = new Map();
   let cultureNameById = new Map();
@@ -401,6 +403,77 @@ export function buildMapTab(
     elFilterCount.textContent = enabled.length ? enabled.join(" • ") : "None";
   }
 
+  function upsertMarkerForBurg(b) {
+    if (!b || typeof b !== "object") return;
+    if (!b.name || typeof b.x !== "number" || typeof b.y !== "number") return;
+    const key = keyForBurg(b);
+    if (markerByKey.has(key)) return;
+
+    const isCapital = !!b.capital;
+    const pop = typeof b.population === "number" ? b.population : 0;
+    const size = clamp((isCapital ? 9 : 6) + Math.sqrt(Math.max(0, pop)) * 0.8, 6, 16);
+
+    const marker = document.createElement("div");
+    marker.className = "mapMarker";
+    marker.dataset.burg = key;
+    marker.style.position = "absolute";
+    marker.style.left = `${b.x}px`;
+    marker.style.top = `${b.y}px`;
+    marker.style.width = `${size}px`;
+    marker.style.height = `${size}px`;
+    marker.style.borderRadius = "999px";
+    marker.style.transform = "translate(-50%,-50%)";
+    marker.style.background = "rgba(255,255,255,0.88)";
+    marker.style.boxShadow = isCapital
+      ? "0 0 0 9px rgba(255,255,255,0.14), 0 0 18px rgba(255,255,255,0.16)"
+      : "0 0 0 7px rgba(255,255,255,0.12)";
+    marker.style.cursor = "pointer";
+    marker.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+    const label = document.createElement("div");
+    label.className = "mapLabel";
+    label.style.position = "absolute";
+    label.style.left = `${b.x}px`;
+    label.style.top = `${b.y}px`;
+    label.style.transform = "translate(10px, -50%)";
+    label.style.padding = "4px 6px";
+    label.style.borderRadius = "999px";
+    label.style.border = "1px solid rgba(255,255,255,0.10)";
+    label.style.background = "rgba(12,16,22,0.55)";
+    label.style.backdropFilter = "blur(8px)";
+    label.style.color = "rgba(255,255,255,0.88)";
+    label.style.font = "800 10px system-ui";
+    label.style.letterSpacing = "0.05em";
+    label.style.whiteSpace = "nowrap";
+    label.style.pointerEvents = "none";
+    label.textContent = b.name;
+
+    marker.addEventListener("mouseenter", (e) => {
+      document.addEventListener("mousemove", onDocMove, { passive: true });
+      const sName = stateNameById.get(b.state) || null;
+      const cName = cultureNameById.get(b.culture) || null;
+      tip.show({ html: cityTooltipHtml(b, sName, cName), clientX: e.clientX, clientY: e.clientY });
+    });
+    marker.addEventListener("mouseleave", () => {
+      document.removeEventListener("mousemove", onDocMove);
+      tip.hide();
+    });
+    marker.addEventListener("mousemove", (e) => tip.move({ clientX: e.clientX, clientY: e.clientY }));
+
+    marker.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setSelected(b);
+      if (typeof onNodeClick === "function") onNodeClick(b);
+    });
+
+    markersEl.appendChild(marker);
+    markersEl.appendChild(label);
+
+    const m = { el: marker, labelEl: label, burg: b, pop, isCapital, category: classifyBurg(b, cityPopThreshold) };
+    markers.push(m);
+    markerByKey.set(key, m);
+  }
+
   function passesFilter(m) {
     if (m.isCapital) return showCapitals;
 
@@ -444,6 +517,17 @@ export function buildMapTab(
       });
     }
   };
+
+  const onWorldBurgDiscovered = (ev) => {
+    const burg = ev?.detail;
+    if (!burg) return;
+    upsertMarkerForBurg(burg);
+    updateStatus();
+    updateSelectionStyles();
+    void apply(true);
+  };
+
+  window.addEventListener("world:burg-discovered", onWorldBurgDiscovered);
 
   const onDown = (e) => {
     isDown = true;
@@ -594,81 +678,12 @@ export function buildMapTab(
         if (!b || typeof b !== "object") continue;
         if (!b.name || typeof b.x !== "number" || typeof b.y !== "number") continue;
 
-        const isCapital = !!b.capital;
-        const pop = typeof b.population === "number" ? b.population : 0;
-
-        const size = clamp((isCapital ? 9 : 6) + Math.sqrt(Math.max(0, pop)) * 0.8, 6, 16);
-
-        const marker = document.createElement("div");
-        marker.className = "mapMarker";
-        marker.dataset.burg = keyForBurg(b);
-
-        marker.style.position = "absolute";
-        marker.style.left = `${b.x}px`;
-        marker.style.top = `${b.y}px`;
-        marker.style.width = `${size}px`;
-        marker.style.height = `${size}px`;
-        marker.style.borderRadius = "999px";
-        marker.style.transform = "translate(-50%,-50%)";
-        marker.style.background = "rgba(255,255,255,0.88)";
-        marker.style.boxShadow = isCapital
-          ? "0 0 0 9px rgba(255,255,255,0.14), 0 0 18px rgba(255,255,255,0.16)"
-          : "0 0 0 7px rgba(255,255,255,0.12)";
-        marker.style.cursor = "pointer";
-
-        // Stop drag-start but allow wheel to bubble (so zoom works on hover)
-        marker.addEventListener("pointerdown", (e) => e.stopPropagation());
-
-        // Small label (scaled down)
-        const label = document.createElement("div");
-        label.className = "mapLabel";
-        label.style.position = "absolute";
-        label.style.left = `${b.x}px`;
-        label.style.top = `${b.y}px`;
-        label.style.transform = "translate(10px, -50%)";
-        label.style.padding = "4px 6px";
-        label.style.borderRadius = "999px";
-        label.style.border = "1px solid rgba(255,255,255,0.10)";
-        label.style.background = "rgba(12,16,22,0.55)";
-        label.style.backdropFilter = "blur(8px)";
-        label.style.color = "rgba(255,255,255,0.88)";
-        label.style.font = "800 10px system-ui"; // smaller than before
-        label.style.letterSpacing = "0.05em";
-        label.style.whiteSpace = "nowrap";
-        label.style.pointerEvents = "none";
-        label.textContent = b.name;
-
-        marker.addEventListener("mouseenter", (e) => {
-          document.addEventListener("mousemove", onDocMove, { passive: true });
-          const sName = stateNameById.get(b.state) || null;
-          const cName = cultureNameById.get(b.culture) || null;
-          tip.show({ html: cityTooltipHtml(b, sName, cName), clientX: e.clientX, clientY: e.clientY });
-        });
-        marker.addEventListener("mouseleave", () => {
-          document.removeEventListener("mousemove", onDocMove);
-          tip.hide();
-        });
-        marker.addEventListener("mousemove", (e) => tip.move({ clientX: e.clientX, clientY: e.clientY }));
-
-        marker.addEventListener("click", (e) => {
-          e.stopPropagation();
-          setSelected(b);
-          if (typeof onNodeClick === "function") onNodeClick(b);
-        });
-
-        markersEl.appendChild(marker);
-        markersEl.appendChild(label);
-
-        markers.push({
-          el: marker,
-          labelEl: label,
-          burg: b,
-          pop,
-          isCapital,
-          category: classifyBurg(b, cityPopThreshold),
-        });
+        upsertMarkerForBurg(b);
         count++;
       }
+
+      const cachedBurgs = await loadAllCachedBurgs();
+      for (const b of cachedBurgs) upsertMarkerForBurg(b);
 
       // Click empty space to clear selection
       mapCanvas.addEventListener("click", () => setSelected(null));
@@ -705,5 +720,6 @@ export function buildMapTab(
     window.removeEventListener("pointerup", onUp);
     viewport.removeEventListener("wheel", onWheel);
     tip.hide();
+    window.removeEventListener("world:burg-discovered", onWorldBurgDiscovered);
   };
 }
