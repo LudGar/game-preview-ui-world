@@ -480,6 +480,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       const pos = converters.mapToPlane(b.x, b.y);
       const marker = new THREE.Mesh(markerGeo, mat);
       marker.position.set(pos.x, 1200, pos.z);
+      marker.userData.burgId = Number.isInteger(b?.i) ? b.i : null;
       renderLayers.settlements.add(marker);
 
       const markerList = settlementMarkersByCell.get(idx) || [];
@@ -522,6 +523,16 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
   applyRenderOptions();
 
+  function setSettlementVisibilityForCell(cellIndex, highlightedBurgId = null) {
+    for (const [idx, markers] of settlementMarkersByCell.entries()) {
+      const showCellMarkers = idx === cellIndex;
+      for (const marker of markers) {
+        const isHighlighted = highlightedBurgId != null && marker.userData?.burgId === highlightedBurgId;
+        marker.visible = showCellMarkers && !isHighlighted;
+      }
+    }
+  }
+
   function findCellByMapPoint(x, y) {
     const tryIndices = [];
     if (activeCellIndex >= 0) {
@@ -557,6 +568,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     }
 
     activeCellIndex = nextActive;
+    setSettlementVisibilityForCell(activeCellIndex);
   }
 
   async function handleCellEntered(cellIndex) {
@@ -576,9 +588,6 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     if (!cachedBurg && discovered.cell === cellIndex) {
       void saveCachedBurgForCell(cellIndex, discovered);
     }
-
-    const markers = settlementMarkersByCell.get(cellIndex) || [];
-    for (const marker of markers) marker.visible = false;
 
     const pos = converters.mapToPlane(discovered.x, discovered.y);
     window.dispatchEvent(
@@ -642,6 +651,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     settlementPositions,
     getRenderOptions: () => ({ ...renderOptions }),
     setRenderOptions: (nextOptions) => applyRenderOptions(nextOptions),
+    setSettlementVisibilityForCell,
     cleanup() {
       scene.remove(worldRoot);
       worldRoot.traverse((obj) => {
