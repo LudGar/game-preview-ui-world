@@ -407,6 +407,8 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   };
 
   let activeCellIndex = -1;
+  let highlightedCellIndex = -1;
+  let highlightedBurgId = null;
 
   const terrainMaterials = {
     land: new THREE.MeshStandardMaterial({
@@ -523,11 +525,19 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
   applyRenderOptions();
 
-  function setSettlementVisibilityForCell(cellIndex, highlightedBurgId = null) {
+  function setSettlementVisibilityForCell(cellIndex, nextHighlightedBurgId = null) {
+    if (Number.isInteger(cellIndex) && cellIndex >= 0 && nextHighlightedBurgId != null) {
+      highlightedCellIndex = cellIndex;
+      highlightedBurgId = nextHighlightedBurgId;
+    }
+
     for (const [idx, markers] of settlementMarkersByCell.entries()) {
       const showCellMarkers = idx === cellIndex;
       for (const marker of markers) {
-        const isHighlighted = highlightedBurgId != null && marker.userData?.burgId === highlightedBurgId;
+        const isHighlighted =
+          highlightedBurgId != null &&
+          idx === highlightedCellIndex &&
+          marker.userData?.burgId === highlightedBurgId;
         marker.visible = showCellMarkers && !isHighlighted;
       }
     }
