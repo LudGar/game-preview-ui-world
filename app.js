@@ -11,6 +11,7 @@ import { buildCharacterTab } from "./character.js";
 import { buildCosmeticsTab } from "./cosmetics.js";
 import { buildSettingsTab } from "./settings.js";
 import { buildWorldFromAzgaar } from "./world-builder.js";
+import { loadAllCachedBurgs } from "./burgs-store.js";
 
 /* ===========================================================
    Tabs
@@ -162,12 +163,36 @@ function ensureUiPanel() {
   panel.style.userSelect = "none";
 
   document.body.appendChild(panel);
+
   return panel;
 }
 
 function setPanelVisible(panel, visible) {
   panel.style.opacity = visible ? "1" : "0";
   panel.style.pointerEvents = visible ? "auto" : "none";
+}
+
+function downloadJsonFile(filename, payload) {
+  let jsonText = "";
+  try {
+    jsonText = `${JSON.stringify(payload, null, 2)}\n`;
+  } catch {
+    return false;
+  }
+
+  const blob = new Blob([jsonText], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.setTimeout(() => URL.revokeObjectURL(url), 800);
+  return true;
 }
 
 function ensureBurgPreviewWindow() {
@@ -195,13 +220,49 @@ function ensureBurgPreviewWindow() {
   panel.innerHTML = `
     <header style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.10); display:flex; justify-content:space-between; align-items:center; gap:10px;">
       <div style="font:700 12px/1.2 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(255,255,255,0.95); letter-spacing:0.07em;">NEAREST BURG — CITY PREVIEW</div>
-      <a id="burgPreviewOpen" href="${LOCAL_CITY_GENERATOR_BASE}" target="_blank" rel="noopener noreferrer" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#c6e0ff; text-decoration:none;">open</a>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button id="burgPreviewDownloadOne" type="button" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#e8f4ff; background:rgba(70,120,180,0.35); border:1px solid rgba(170,210,255,0.45); border-radius:9px; padding:6px 8px; cursor:pointer;">save json</button>
+        <button id="burgPreviewDownloadAll" type="button" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#e8f4ff; background:rgba(90,120,90,0.35); border:1px solid rgba(190,230,190,0.45); border-radius:9px; padding:6px 8px; cursor:pointer;">save all burgs</button>
+        <a id="burgPreviewOpen" href="${LOCAL_CITY_GENERATOR_BASE}" target="_blank" rel="noopener noreferrer" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#c6e0ff; text-decoration:none;">open</a>
+      </div>
     </header>
     <div id="burgPreviewMeta" style="padding:8px 12px; font:500 12px/1.25 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(220,230,240,0.9); border-bottom:1px solid rgba(255,255,255,0.08); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Waiting for cell discovery…</div>
     <iframe id="burgPreviewFrame" title="Nearest burg city generator" src="${LOCAL_CITY_GENERATOR_BASE}" style="flex:1; border:0; width:100%; background:#0b0f13;"></iframe>
   `;
 
   document.body.appendChild(panel);
+
+  const downloadOneBtn = panel.querySelector("#burgPreviewDownloadOne");
+  downloadOneBtn?.addEventListener("click", () => {
+    const frame = panel.querySelector("#burgPreviewFrame");
+    const cityJson = readCityJsonFromMfcgFrame(frame);
+    if (!cityJson) return;
+
+    const cellId = Number.isInteger(activePreviewBurg?.cell) ? activePreviewBurg.cell : "unknown";
+    const payload = {
+      cell: Number.isInteger(activePreviewBurg?.cell) ? activePreviewBurg.cell : null,
+      burg: activePreviewBurg || null,
+      mapSeed: worldMapSeed,
+      exportedAt: new Date().toISOString(),
+      city: cityJson,
+    };
+    downloadJsonFile(`burg-${cellId}.json`, payload);
+  });
+
+  const downloadAllBtn = panel.querySelector("#burgPreviewDownloadAll");
+  downloadAllBtn?.addEventListener("click", async () => {
+    const burgs = await loadAllCachedBurgs();
+    const sorted = [...burgs].sort((a, b) => (a.cell ?? 0) - (b.cell ?? 0));
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      mapSeed: worldMapSeed,
+      count: sorted.length,
+      cells: sorted.map((b) => b.cell),
+      burgs: sorted,
+    };
+    downloadJsonFile("afmg-burgs-export.json", payload);
+  });
+
   return panel;
 }
 
