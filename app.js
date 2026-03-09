@@ -26,6 +26,8 @@ const TABS = [
 const WORLD_LAYER = 0;
 const UI_CHAR_LAYER = 3;
 const LOCAL_CITY_GENERATOR_BASE = new URL("mfcg/index.html", window.location.href).toString();
+const MAX_CITY_JSON_LINES = 44;
+const MAX_CITY_JSON_LINE_LEN = 132;
 
 function boolFlag(v) {
   return Number(v) > 0 ? 1 : 0;
@@ -217,6 +219,86 @@ function updateBurgPreviewWindow({ mapSeed, burg, cell }) {
   meta.textContent = `${burgName}  •  cell ${burgCell}  •  id ${burgId}`;
   frame.src = url;
   open.href = url;
+}
+
+function readCityJsonFromMfcgFrame(frameEl) {
+  if (!frameEl) return null;
+
+  let win = null;
+  try {
+    win = frameEl.contentWindow;
+  } catch {
+    return null;
+  }
+  if (!win) return null;
+
+  try {
+    const editor = win.com?.watabou?.mfcg?.ui?.base?.Editor?.instance || win.Ub?.instance || null;
+    const jsonExporter = win.com?.watabou?.mfcg?.export?.JsonExporter || win.kg || null;
+    if (!editor || !jsonExporter?.export) return null;
+
+    const exportData = jsonExporter.export(editor);
+    if (!exportData) return null;
+
+    const jsonText = typeof exportData.stringify === "function"
+      ? exportData.stringify()
+      : typeof exportData.json === "function"
+        ? exportData.json()
+        : null;
+    if (typeof jsonText !== "string" || !jsonText.trim()) return null;
+
+    return JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+}
+
+function formatCityJsonForLabel(cityJson) {
+  if (!cityJson) return "";
+  let text = "";
+  try {
+    text = JSON.stringify(cityJson, null, 2);
+  } catch {
+    return "";
+  }
+  const lines = text.split("\n");
+  const clipped = lines.slice(0, MAX_CITY_JSON_LINES).map((line) => {
+    if (line.length <= MAX_CITY_JSON_LINE_LEN) return line;
+    return `${line.slice(0, MAX_CITY_JSON_LINE_LEN - 1)}…`;
+  });
+  if (lines.length > MAX_CITY_JSON_LINES) clipped.push("…");
+  return clipped.join("\n");
+}
+
+function makeJsonBillboardTexture(text) {
+  const lines = String(text || "{}").split("\n");
+  const lineHeight = 22;
+  const width = 1024;
+  const height = Math.max(200, lines.length * lineHeight + 38);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgba(6, 10, 18, 0.84)";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "rgba(190, 220, 255, 0.65)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, width - 2, height - 2);
+
+  ctx.font = "700 18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  ctx.fillStyle = "rgba(200, 230, 255, 0.96)";
+  let y = 28;
+  for (const line of lines) {
+    ctx.fillText(line, 18, y);
+    y += lineHeight;
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return { texture, aspect: width / height };
 }
 
 function htmlEscape(s) {
@@ -680,6 +762,62 @@ let activeTab = "map";
 let uiCleanup = null;
 let worldCleanup = null;
 let worldMapToPlane = null;
+let activePreviewBurg = null;
+let cityJsonBillboard = null;
+let cityJsonBillboardTexture = null;
+let cityJsonPollTimer = 0;
+
+function disposeCityJsonBillboardTexture() {
+  cityJsonBillboardTexture?.dispose();
+  cityJsonBillboardTexture = null;
+}
+
+function ensureCityJsonBillboard() {
+  if (cityJsonBillboard) return cityJsonBillboard;
+  const material = new THREE.SpriteMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.visible = false;
+  sprite.renderOrder = 4;
+  sprite.layers.set(WORLD_LAYER);
+  scene.add(sprite);
+  cityJsonBillboard = sprite;
+  return sprite;
+}
+
+function updateCityJsonBillboardFromPreview() {
+  if (!worldMapToPlane || !activePreviewBurg) return;
+
+  const frameEl = document.getElementById("burgPreviewFrame");
+  const cityJson = readCityJsonFromMfcgFrame(frameEl);
+  if (!cityJson) return;
+
+  const labelText = formatCityJsonForLabel(cityJson);
+  if (!labelText) return;
+
+  const sprite = ensureCityJsonBillboard();
+  const burgPos = worldMapToPlane(activePreviewBurg.x, activePreviewBurg.y);
+  if (!burgPos) return;
+
+  const { texture, aspect } = makeJsonBillboardTexture(labelText);
+  disposeCityJsonBillboardTexture();
+  cityJsonBillboardTexture = texture;
+
+  sprite.material.map = texture;
+  sprite.material.needsUpdate = true;
+  sprite.scale.set(16 * aspect, 16, 1);
+  sprite.position.copy(burgPos);
+  sprite.position.y = 0.35;
+  sprite.visible = true;
+}
+
+function scheduleCityJsonPolling() {
+  window.clearInterval(cityJsonPollTimer);
+  cityJsonPollTimer = window.setInterval(updateCityJsonBillboardFromPreview, 900);
+}
 let worldClampPlanePosition = null;
 let worldSetLodFromPosition = null;
 let worldGetCellViewFromPosition = null;
@@ -827,7 +965,10 @@ window.addEventListener("world:burg-discovered", (ev) => {
   const burg = ev?.detail?.mfcgBurg || ev?.detail;
   const cell = ev?.detail?.mfcgCell || null;
   if (!burg) return;
+  activePreviewBurg = burg;
   updateBurgPreviewWindow({ mapSeed: worldMapSeed, burg, cell });
+  scheduleCityJsonPolling();
+  window.setTimeout(updateCityJsonBillboardFromPreview, 450);
 });
 
 async function handleSetTab(tabId) {
@@ -973,6 +1114,11 @@ async function init() {
     fallbackGround.visible = true;
     motionHud.style.display = "none";
   }
+
+  const previewFrame = document.getElementById("burgPreviewFrame");
+  previewFrame?.addEventListener("load", () => {
+    window.setTimeout(updateCityJsonBillboardFromPreview, 350);
+  });
 
   let saves = await getAllSaves(db);
   if (!saves.length) {
