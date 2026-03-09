@@ -11,7 +11,6 @@ import { buildCharacterTab } from "./character.js";
 import { buildCosmeticsTab } from "./cosmetics.js";
 import { buildSettingsTab } from "./settings.js";
 import { buildWorldFromAzgaar } from "./world-builder.js";
-import { loadAllCachedBurgs } from "./burgs-store.js";
 
 /* ===========================================================
    Tabs
@@ -29,6 +28,7 @@ const UI_CHAR_LAYER = 3;
 const LOCAL_CITY_GENERATOR_BASE = new URL("mfcg/index.html", window.location.href).toString();
 const MAX_CITY_JSON_LINES = 44;
 const MAX_CITY_JSON_LINE_LEN = 132;
+const AFMG_MAP_SOURCE = new URL("afmg/Praneland%20Full%202025-12-28-23-09.json", window.location.href).toString();
 
 function boolFlag(v) {
   return Number(v) > 0 ? 1 : 0;
@@ -172,29 +172,6 @@ function setPanelVisible(panel, visible) {
   panel.style.pointerEvents = visible ? "auto" : "none";
 }
 
-function downloadJsonFile(filename, payload) {
-  let jsonText = "";
-  try {
-    jsonText = `${JSON.stringify(payload, null, 2)}\n`;
-  } catch {
-    return false;
-  }
-
-  const blob = new Blob([jsonText], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  window.setTimeout(() => URL.revokeObjectURL(url), 800);
-  return true;
-}
-
 function ensureBurgPreviewWindow() {
   let panel = document.getElementById("burgPreviewWindow");
   if (panel) return panel;
@@ -235,35 +212,106 @@ function ensureBurgPreviewWindow() {
   const downloadOneBtn = panel.querySelector("#burgPreviewDownloadOne");
   downloadOneBtn?.addEventListener("click", () => {
     const frame = panel.querySelector("#burgPreviewFrame");
-    const cityJson = readCityJsonFromMfcgFrame(frame);
-    if (!cityJson) return;
-
-    const cellId = Number.isInteger(activePreviewBurg?.cell) ? activePreviewBurg.cell : "unknown";
-    const payload = {
-      cell: Number.isInteger(activePreviewBurg?.cell) ? activePreviewBurg.cell : null,
-      burg: activePreviewBurg || null,
-      mapSeed: worldMapSeed,
-      exportedAt: new Date().toISOString(),
-      city: cityJson,
-    };
-    downloadJsonFile(`burg-${cellId}.json`, payload);
+    triggerMfcgExportJson(frame);
   });
 
   const downloadAllBtn = panel.querySelector("#burgPreviewDownloadAll");
   downloadAllBtn?.addEventListener("click", async () => {
-    const burgs = await loadAllCachedBurgs();
-    const sorted = [...burgs].sort((a, b) => (a.cell ?? 0) - (b.cell ?? 0));
-    const payload = {
-      exportedAt: new Date().toISOString(),
-      mapSeed: worldMapSeed,
-      count: sorted.length,
-      cells: sorted.map((b) => b.cell),
-      burgs: sorted,
-    };
-    downloadJsonFile("afmg-burgs-export.json", payload);
+    const frame = panel.querySelector("#burgPreviewFrame");
+    const map = await loadAfmgMapSource();
+    const pack = map && typeof map === "object" ? map.pack : null;
+    const burgs = Array.isArray(pack?.burgs)
+      ? pack.burgs.filter((burg) => burg && Number.isInteger(burg.i) && Number.isInteger(burg.cell))
+      : [];
+    if (!frame || burgs.length === 0) return;
+
+    const cells = Array.isArray(pack?.cells) ? pack.cells : null;
+    const mapSeed = String(map?.seed || worldMapSeed || "0000");
+
+    for (const burg of burgs) {
+      const cell = cells && Number.isInteger(burg.cell) ? cells[burg.cell] : null;
+      await triggerMfcgExportJsonForBurg(frame, { mapSeed, burg, cell });
+    }
   });
 
   return panel;
+}
+
+let afmgMapSourcePromise = null;
+
+async function loadAfmgMapSource() {
+  if (afmgMapSourcePromise) return afmgMapSourcePromise;
+
+  afmgMapSourcePromise = fetch(AFMG_MAP_SOURCE)
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null);
+
+  return afmgMapSourcePromise;
+}
+
+function triggerMfcgExportJson(frameEl) {
+  if (!frameEl) return false;
+
+  try {
+    const win = frameEl.contentWindow;
+    if (!win) return false;
+
+    const exportApi = win.com?.watabou?.mfcg?.export?.Export || win.be || null;
+    if (typeof exportApi?.asJSON !== "function") return false;
+
+    exportApi.asJSON();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function triggerMfcgExportJsonForBurg(frameEl, { mapSeed, burg, cell }) {
+  if (!frameEl || !burg) return false;
+
+  const cityUrl = buildMfcgCityUrl({ mapSeed, burg, cell });
+  const loaded = await loadMfcgFrame(frameEl, cityUrl);
+  if (!loaded) return false;
+
+  for (let i = 0; i < 120; i += 1) {
+    if (triggerMfcgExportJson(frameEl)) return true;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+
+  return false;
+}
+
+function loadMfcgFrame(frameEl, src) {
+  return new Promise((resolve) => {
+    if (!frameEl) {
+      resolve(false);
+      return;
+    }
+
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(false);
+    }, 10000);
+
+    const onLoad = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(true);
+    };
+
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      frameEl.removeEventListener("load", onLoad);
+    };
+
+    frameEl.addEventListener("load", onLoad, { once: true });
+    frameEl.src = src;
+  });
 }
 
 function updateBurgPreviewWindow({ mapSeed, burg, cell }) {
