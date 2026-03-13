@@ -1,4 +1,3 @@
-// app.js
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
@@ -11,6 +10,7 @@ import { buildCharacterTab } from "./character.js";
 import { buildCosmeticsTab } from "./cosmetics.js";
 import { buildSettingsTab } from "./settings.js";
 import { buildWorldFromAzgaar } from "./world-builder.js";
+import { buildCityFromMfcgJson } from "./city-renderer.js";
 
 /* ===========================================================
    Tabs
@@ -26,7 +26,11 @@ const TABS = [
 const WORLD_LAYER = 0;
 const UI_CHAR_LAYER = 3;
 const LOCAL_CITY_GENERATOR_BASE = new URL("mfcg/index.html", window.location.href).toString();
-const MAX_PROJECTED_CITY_POINTS = 12000;
+const AFMG_MAP_SOURCE = new URL("afmg/Praneland%20Full%202025-12-28-23-09.json", window.location.href).toString();
+const BULK_BURG_EXPORT_LOAD_TIMEOUT_MS = 10000;
+const BULK_BURG_EXPORT_RENDER_DELAY_MS = 650;
+const BULK_BURG_EXPORT_BETWEEN_DELAY_MS = 300;
+const BULK_BURG_HEADLESS_RENDER_TIMEOUT_MS = 12000;
 
 function boolFlag(v) {
   return Number(v) > 0 ? 1 : 0;
@@ -170,61 +174,212 @@ function setPanelVisible(panel, visible) {
   panel.style.pointerEvents = visible ? "auto" : "none";
 }
 
-function ensureBurgPreviewWindow() {
-  let panel = document.getElementById("burgPreviewWindow");
-  if (panel) return panel;
+/** Returns the hidden MFCG iframe used for city generation (no visible panel). */
+function ensureMfcgHiddenFrame() {
+  let frame = document.getElementById("burgPreviewFrame");
+  if (frame) return frame;
 
-  panel = document.createElement("section");
-  panel.id = "burgPreviewWindow";
-  panel.style.position = "fixed";
-  panel.style.right = "16px";
-  panel.style.bottom = "16px";
-  panel.style.width = "min(520px, 42vw)";
-  panel.style.height = "min(460px, 56vh)";
-  panel.style.display = "flex";
-  panel.style.flexDirection = "column";
-  panel.style.borderRadius = "14px";
-  panel.style.overflow = "hidden";
-  panel.style.background = "rgba(10,14,18,0.92)";
-  panel.style.border = "1px solid rgba(255,255,255,0.12)";
-  panel.style.boxShadow = "0 18px 48px rgba(0,0,0,0.45)";
-  panel.style.backdropFilter = "blur(8px)";
-  panel.style.zIndex = "9500";
-  panel.style.pointerEvents = "auto";
-
-  panel.innerHTML = `
-    <header style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.10); display:flex; justify-content:space-between; align-items:center; gap:10px;">
-      <div style="font:700 12px/1.2 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(255,255,255,0.95); letter-spacing:0.07em;">NEAREST BURG — CITY PREVIEW</div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <a id="burgPreviewOpen" href="${LOCAL_CITY_GENERATOR_BASE}" target="_blank" rel="noopener noreferrer" style="font:600 11px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#c6e0ff; text-decoration:none;">open</a>
-      </div>
-    </header>
-    <div id="burgPreviewMeta" style="padding:8px 12px; font:500 12px/1.25 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:rgba(220,230,240,0.9); border-bottom:1px solid rgba(255,255,255,0.08); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Waiting for cell discovery…</div>
-    <iframe id="burgPreviewFrame" title="Nearest burg city generator" src="about:blank" style="flex:1; border:0; width:100%; background:#0b0f13;"></iframe>
-  `;
-
-  document.body.appendChild(panel);
-
-  return panel;
+  frame = document.createElement("iframe");
+  frame.id = "burgPreviewFrame";
+  frame.title = "City generator (hidden)";
+  frame.setAttribute("aria-hidden", "true");
+  frame.tabIndex = -1;
+  frame.src = "about:blank";
+  frame.style.cssText = "position:fixed;width:1px;height:1px;left:-9999px;bottom:-9999px;opacity:0;border:0;pointer-events:none;";
+  document.body.appendChild(frame);
+  return frame;
 }
 
-function updateBurgPreviewWindow({ mapSeed, burg, cell }) {
-  const panel = ensureBurgPreviewWindow();
-  const frame = panel.querySelector("#burgPreviewFrame");
-  const meta = panel.querySelector("#burgPreviewMeta");
-  const open = panel.querySelector("#burgPreviewOpen");
-  if (!frame || !meta || !open) return;
+function waitForMs(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
+async function loadAllBurgPreviewTargets() {
+  if (Array.isArray(cachedBurgPreviewTargets)) return cachedBurgPreviewTargets;
+
+  const res = await fetch(AFMG_MAP_SOURCE);
+  if (!res.ok) throw new Error("Unable to load world map data for burg export");
+
+  const world = await res.json();
+  const pack = world?.pack;
+  const burgs = Array.isArray(pack?.burgs) ? pack.burgs : [];
+  const cells = Array.isArray(pack?.cells) ? pack.cells : [];
+
+  cachedBurgPreviewTargets = burgs
+    .filter((burg) => burg && !burg.removed && Number.isFinite(burg.x) && Number.isFinite(burg.y) && Number.isInteger(burg.cell) && burg.cell >= 0)
+    .map((burg) => {
+      const riverValue = Number(cells[burg.cell]?.r || 0);
+      return {
+        burg,
+        cell: { r: Number.isFinite(riverValue) ? riverValue : 0 },
+      };
+    });
+
+  return cachedBurgPreviewTargets;
+}
+
+function waitForFrameLoad(frame, timeoutMs = BULK_BURG_EXPORT_LOAD_TIMEOUT_MS) {
+  if (!frame) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (status) => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timeoutId);
+      frame.removeEventListener("load", onLoad);
+      resolve(status);
+    };
+
+    const onLoad = () => finish(true);
+    const timeoutId = window.setTimeout(() => finish(false), timeoutMs);
+    frame.addEventListener("load", onLoad, { once: true });
+  });
+}
+
+
+function waitForFrameExportReady(frame, timeoutMs = BULK_BURG_HEADLESS_RENDER_TIMEOUT_MS) {
+  if (!frame) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    let done = false;
+    const startedAt = performance.now();
+
+    function finish(status) {
+      if (done) return;
+      done = true;
+      resolve(status);
+    }
+
+    function checkReady() {
+      if (done) return;
+      try {
+        const win = frame.contentWindow;
+        const editor = win?.com?.watabou?.mfcg?.ui?.base?.Editor?.instance || win?.Ub?.instance;
+        const exporter = win?.com?.watabou?.mfcg?.export?.JsonExporter || win?.kg;
+        if (editor && typeof exporter?.export === "function") {
+          finish(true);
+          return;
+        }
+      } catch {
+        finish(false);
+        return;
+      }
+
+      if (performance.now() - startedAt >= timeoutMs) {
+        finish(false);
+        return;
+      }
+      window.requestAnimationFrame(checkReady);
+    }
+
+    checkReady();
+  });
+}
+
+function triggerJsonDownload({ text, fileName }) {
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = fileName || "all-burgs.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(href), 1500);
+}
+
+async function postBurgToServer(cellId, payload) {
+  try {
+    const res = await fetch(`/api/burgs/${cellId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function exportAllBurgsHeadless(btn) {
+  let targets = [];
+  try {
+    targets = await loadAllBurgPreviewTargets();
+  } catch {
+    return { ok: false, reason: "world data unavailable" };
+  }
+  if (!targets.length) return { ok: false, reason: "no burgs found" };
+
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.tabIndex = -1;
+  frame.style.position = "fixed";
+  frame.style.width = "1px";
+  frame.style.height = "1px";
+  frame.style.left = "-9999px";
+  frame.style.bottom = "-9999px";
+  frame.style.opacity = "0";
+
+  document.body.appendChild(frame);
+  const exported = [];
+
+  try {
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      btn.textContent = `headless ${index + 1}/${targets.length}`;
+      frame.src = buildMfcgCityUrl({ mapSeed: worldMapSeed, burg: target.burg, cell: target.cell });
+
+      const loaded = await waitForFrameLoad(frame);
+      if (!loaded) continue;
+
+      const ready = await waitForFrameExportReady(frame);
+      if (!ready) continue;
+
+      const city = readCityJsonFromMfcgFrame(frame);
+      if (city && typeof city === "object") {
+        exported.push({
+          id: target.burg?.i ?? null,
+          cell: target.burg?.cell ?? null,
+          name: target.burg?.name ?? null,
+          city,
+        });
+      }
+    }
+  } finally {
+    frame.remove();
+  }
+
+  if (!exported.length) return { ok: false, reason: "no city json exported" };
+
+  let savedCount = 0;
+  for (const entry of exported) {
+    const cellId = entry.cell;
+    if (!Number.isInteger(cellId) || cellId < 0) continue;
+    const ok = await postBurgToServer(cellId, {
+      generatedAt: new Date().toISOString(),
+      mapSeed: String(worldMapSeed || "0000"),
+      burg: targets.find((t) => t.burg?.cell === cellId)?.burg ?? null,
+      city: entry.city,
+    });
+    if (ok) savedCount++;
+  }
+
+  btn.textContent = `headless saved ${savedCount}/${exported.length}`;
+  window.setTimeout(() => {
+    btn.textContent = "headless save all";
+  }, 1500);
+  return { ok: true };
+}
+
+/** Update the hidden MFCG iframe src for city generation. */
+function updateMfcgFrame({ mapSeed, burg, cell }) {
+  const frame = ensureMfcgHiddenFrame();
   const url = buildMfcgCityUrl({ mapSeed, burg, cell });
-  const burgName = burg?.name || `Burg ${burg?.cell ?? "?"}`;
-  const burgCell = Number.isInteger(burg?.cell) ? burg.cell : "?";
-  const burgId = Number.isInteger(burg?.i) ? burg.i : "?";
-  meta.textContent = `${burgName}  •  cell ${burgCell}  •  id ${burgId}`;
   if (lastPreviewCityUrl !== url) {
     frame.src = url;
     lastPreviewCityUrl = url;
   }
-  open.href = url;
 }
 
 function readCityJsonFromMfcgFrame(frameEl) {
@@ -257,21 +412,6 @@ function readCityJsonFromMfcgFrame(frameEl) {
   } catch {
     return null;
   }
-}
-
-function extractProjectedCityPoints(value, out = [], limit = MAX_PROJECTED_CITY_POINTS) {
-  if (!value || out.length >= limit) return out;
-  if (Array.isArray(value)) {
-    for (const item of value) extractProjectedCityPoints(item, out, limit);
-    return out;
-  }
-  if (typeof value !== "object") return out;
-
-  const x = Number(value.x);
-  const y = Number(value.y);
-  if (Number.isFinite(x) && Number.isFinite(y)) out.push({ x, y });
-  for (const nested of Object.values(value)) extractProjectedCityPoints(nested, out, limit);
-  return out;
 }
 
 function htmlEscape(s) {
@@ -734,99 +874,90 @@ let activeTab = "map";
 
 let uiCleanup = null;
 let worldCleanup = null;
-let worldMapToPlane = null;
+let worldMapToPlane  = null;
+let worldPlaneToMap  = null;
 let activePreviewBurg = null;
-let cityProjectionPoints = null;
-let cityProjectionMaterial = null;
+let activeCityJson    = null;
 let cityJsonPollTimer = 0;
 
-function ensureCityProjectionPoints() {
-  if (cityProjectionPoints) return cityProjectionPoints;
-  const geometry = new THREE.BufferGeometry();
-  cityProjectionMaterial = new THREE.PointsMaterial({
-    color: 0x9fd4ff,
-    size: 90,
-    sizeAttenuation: true,
-    transparent: true,
-    opacity: 0.88,
-    depthTest: false,
-    depthWrite: false,
+function renderCityOnWorldMap(cityJson) {
+  const dbg = window.__cityDebug = { step: 'entered', hasMapToPlane: !!worldMapToPlane, hasBurg: !!activePreviewBurg };
+  if (!worldMapToPlane || !activePreviewBurg) { dbg.step = 'early-exit-guards'; return; }
+  if (!cityJson || typeof cityJson !== "object") { dbg.step = 'early-exit-cityJson'; return; }
+
+  // Clean up any previously rendered city
+  if (activeCityCleanup) { activeCityCleanup(); activeCityCleanup = null; }
+  if (activeCityGroup)   { scene.remove(activeCityGroup); activeCityGroup = null; }
+
+  const worldPos = worldMapToPlane(activePreviewBurg.x, activePreviewBurg.y);
+  dbg.worldPos = worldPos ? { x: worldPos.x, y: worldPos.y, z: worldPos.z } : null;
+  if (!worldPos) { dbg.step = 'early-exit-worldPos'; return; }
+
+  const burgCellIndex = Number.isInteger(activePreviewBurg.cell) ? activePreviewBurg.cell : -1;
+  const baseY = (worldGetTerrainYForCell && burgCellIndex >= 0)
+    ? worldGetTerrainYForCell(burgCellIndex)
+    : 0.35;
+  dbg.baseY = baseY;
+
+  const { group, cleanup } = buildCityFromMfcgJson(cityJson, {
+    worldPos,
+    scale:  1.0,
+    baseY,
+    layer:  WORLD_LAYER,
   });
-  const points = new THREE.Points(geometry, cityProjectionMaterial);
-  points.visible = false;
-  points.renderOrder = 25;
-  points.layers.set(WORLD_LAYER);
-  scene.add(points);
-  cityProjectionPoints = points;
-  return points;
+
+  dbg.groupChildCount = group?.children?.length;
+  dbg.step = 'scene-add';
+  scene.add(group);
+  activeCityGroup   = group;
+  activeCityCleanup = cleanup;
+  dbg.step = 'done';
 }
 
-function updateCityProjectionFromPreview() {
+function updateCityJsonBillboardFromPreview() {
   if (!worldMapToPlane || !activePreviewBurg) return;
-
   const frameEl = document.getElementById("burgPreviewFrame");
   const cityJson = readCityJsonFromMfcgFrame(frameEl);
   if (!cityJson) return;
+  activeCityJson = cityJson;
+  renderCityOnWorldMap(cityJson);
 
-  const points = extractProjectedCityPoints(cityJson);
-  if (!points.length) return;
+  // Notify the map tab so its SVG overlay updates with the freshly-generated city.
+  // Uses a distinct event name to avoid re-triggering app.js's own burg-discovered handler.
+  window.dispatchEvent(new CustomEvent("world:city-ready", {
+    detail: { burg: activePreviewBurg, cityJson },
+  }));
 
-  const nearestAnchor = worldSettlementAnchors.reduce((best, anchor) => {
-    if (!Number.isFinite(anchor?.mapX) || !Number.isFinite(anchor?.mapY)) return best;
-    const dx = anchor.mapX - activePreviewBurg.x;
-    const dy = anchor.mapY - activePreviewBurg.y;
-    const d2 = dx * dx + dy * dy;
-    if (!best || d2 < best.d2) return { anchor, d2 };
-    return best;
-  }, null)?.anchor || null;
-
-  const markerPos = nearestAnchor?.position
-    ? nearestAnchor.position.clone()
-    : worldMapToPlane(activePreviewBurg.x, activePreviewBurg.y);
-  if (!markerPos) return;
-
-  const bounds = points.reduce(
-    (acc, p) => ({
-      minX: Math.min(acc.minX, p.x),
-      minY: Math.min(acc.minY, p.y),
-      maxX: Math.max(acc.maxX, p.x),
-      maxY: Math.max(acc.maxY, p.y),
-    }),
-    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
-  );
-  const centerX = (bounds.minX + bounds.maxX) * 0.5;
-  const centerY = (bounds.minY + bounds.maxY) * 0.5;
-
-  const cityLayer = ensureCityProjectionPoints();
-  const scale = 0.12;
-  const cityLift = 16;
-  const positions = new Float32Array(points.length * 3);
-  for (let i = 0; i < points.length; i += 1) {
-    const x = markerPos.x + (points[i].x - centerX) * scale;
-    const z = markerPos.z + (points[i].y - centerY) * scale;
-    positions[i * 3] = x;
-    positions[i * 3 + 1] = cityLift;
-    positions[i * 3 + 2] = z;
+  // City is ready - stop polling and auto-save so future visits skip MFCG entirely.
+  window.clearInterval(cityJsonPollTimer);
+  const cellId = Number.isInteger(activePreviewBurg?.cell) ? activePreviewBurg.cell : -1;
+  if (cellId >= 0) {
+    void postBurgToServer(cellId, {
+      generatedAt: new Date().toISOString(),
+      mapSeed: String(worldMapSeed || "0000"),
+      burg: activePreviewBurg,
+      city: cityJson,
+    });
   }
-
-  cityLayer.geometry.dispose();
-  cityLayer.geometry = new THREE.BufferGeometry();
-  cityLayer.geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  cityLayer.visible = true;
 }
 
 function scheduleCityJsonPolling() {
   window.clearInterval(cityJsonPollTimer);
-  cityJsonPollTimer = window.setInterval(updateCityProjectionFromPreview, 900);
+  cityJsonPollTimer = window.setInterval(updateCityJsonBillboardFromPreview, 900);
 }
+let activeCityGroup   = null;
+let activeCityCleanup = null;
 let worldClampPlanePosition = null;
-let worldSetLodFromPosition = null;
+let worldSetLodFromPosition  = null;
+let worldForceDiscover       = null;
 let worldGetCellViewFromPosition = null;
+let worldGetTerrainYForCell = null;
 let worldGetRenderOptions = null;
 let worldSetRenderOptions = null;
-let worldSetSettlementMarkerVisibility = null;
 let worldMapSeed = "0000";
 let worldSettlementAnchors = [];
+let isBulkBurgExportRunning = false;
+let cachedBurgPreviewTargets = null;
 let lastPreviewCityUrl = "";
 
 const tooltip = createTooltip();
@@ -842,9 +973,7 @@ function cleanupPanel() {
 
 function renderHtmlPanel() {
   const panel = ensureUiPanel();
-  const burgPreview = ensureBurgPreviewWindow();
   setPanelVisible(panel, uiOpen);
-  burgPreview.style.display = appState === "game" ? "flex" : "none";
   syncCharacterVisibility();
 
   cleanupPanel();
@@ -898,6 +1027,12 @@ function renderHtmlPanel() {
       activeSaveId,
       getUiState,
       setUiState,
+      activeCityData: (activePreviewBurg && activeCityJson)
+        ? { burg: activePreviewBurg, cityJson: activeCityJson }
+        : null,
+      getCharacterMapPos: () => worldPlaneToMap
+        ? worldPlaneToMap(characterWorld.position.x, characterWorld.position.z)
+        : null,
       onNodeClick: (burg) => {
         if (!planarMotion.enabled || !worldMapToPlane) return;
         if (!Number.isFinite(burg?.x) || !Number.isFinite(burg?.y)) return;
@@ -921,7 +1056,8 @@ function renderHtmlPanel() {
 
         characterWorld.position.copy(nextPos);
         planarMotion.velocity.set(0, 0, 0);
-        worldSetLodFromPosition?.(nextPos);
+        // Force city discovery even if destination is the same cell we're already in.
+        (worldForceDiscover ?? worldSetLodFromPosition)?.(nextPos);
         present.charPos.copy(nextPos);
         present.tCharPos.copy(nextPos);
         controls.target.copy(nextPos);
@@ -965,14 +1101,25 @@ function renderHtmlPanel() {
 }
 
 window.addEventListener("world:burg-discovered", (ev) => {
-  const burg = ev?.detail?.mfcgBurg || ev?.detail;
-  const cell = ev?.detail?.mfcgCell || null;
+  const burg     = ev?.detail?.mfcgBurg || ev?.detail;
+  const cell     = ev?.detail?.mfcgCell || null;
+  const cityJson = ev?.detail?.cityJson  || null;
   if (!burg) return;
+
   activePreviewBurg = burg;
-  worldSetSettlementMarkerVisibility?.(Number(activePreviewBurg?.cell), Number(activePreviewBurg?.i));
-  updateBurgPreviewWindow({ mapSeed: worldMapSeed, burg, cell });
+
+  // Saved city data - render immediately, skip MFCG entirely.
+  if (cityJson) {
+    activeCityJson = cityJson;
+    renderCityOnWorldMap(cityJson);
+    return;
+  }
+
+  // No saved city - load MFCG iframe and poll until it exports the city JSON,
+  // then auto-save so future visits skip this step.
+  updateMfcgFrame({ mapSeed: worldMapSeed, burg, cell });
   scheduleCityJsonPolling();
-  window.setTimeout(updateCityProjectionFromPreview, 450);
+  window.setTimeout(updateCityJsonBillboardFromPreview, 450);
 });
 
 async function handleSetTab(tabId) {
@@ -1069,13 +1216,15 @@ async function init() {
 
     const worldPlane = builtWorld?.worldPlane;
     const mapSpace = builtWorld?.mapSpace;
-    worldMapToPlane = mapSpace?.mapToPlane || null;
+    worldMapToPlane  = mapSpace?.mapToPlane  || null;
+    worldPlaneToMap  = mapSpace?.planeToMap  || null;
     worldClampPlanePosition = mapSpace?.clampPlanePosition || null;
     worldSetLodFromPosition = builtWorld?.setActiveCellFromPlanePosition || null;
+    worldForceDiscover      = builtWorld?.forceDiscoverAtPosition        || null;
     worldGetCellViewFromPosition = builtWorld?.getCellViewForPlanePosition || null;
+    worldGetTerrainYForCell = builtWorld?.getTerrainYForCell || null;
     worldGetRenderOptions = builtWorld?.getRenderOptions || null;
     worldSetRenderOptions = builtWorld?.setRenderOptions || null;
-    worldSetSettlementMarkerVisibility = builtWorld?.setSettlementVisibilityForCell || null;
     worldMapSeed = String(builtWorld?.world?.info?.seed ?? "").trim() || "0000";
 
     const settlements = Array.isArray(builtWorld?.settlementPositions) ? builtWorld.settlementPositions : [];
@@ -1120,9 +1269,9 @@ async function init() {
     motionHud.style.display = "none";
   }
 
-  const previewFrame = document.getElementById("burgPreviewFrame");
-  previewFrame?.addEventListener("load", () => {
-    window.setTimeout(updateCityProjectionFromPreview, 350);
+  const previewFrame = ensureMfcgHiddenFrame();
+  previewFrame.addEventListener("load", () => {
+    window.setTimeout(updateCityJsonBillboardFromPreview, 350);
   });
 
   let saves = await getAllSaves(db);
