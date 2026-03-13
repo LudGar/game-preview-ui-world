@@ -1,4 +1,3 @@
-// tooltip.js
 export function createTooltip() {
   let el = document.getElementById("uiTooltip");
   if (!el) {
