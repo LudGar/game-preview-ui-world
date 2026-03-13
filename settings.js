@@ -1,4 +1,3 @@
-// settings.js
 function htmlEscape(s) {
   return String(s)
     .replaceAll("&", "&amp;")
