@@ -14,6 +14,8 @@ function sanitizeBurgPayload(burg, fallbackCell = -1) {
     state: Number.isInteger(burg.state) ? burg.state : 0,
     culture: Number.isInteger(burg.culture) ? burg.culture : 0,
     type: typeof burg.type === "string" && burg.type.trim() ? burg.type.trim() : "Settlement",
+    // Preserve optional city GeoJSON (MFCG export) if present
+    ...(burg.city && typeof burg.city === "object" ? { city: burg.city } : {}),
   };
 }
 
@@ -146,6 +148,16 @@ export async function loadAllCachedBurgs() {
 export async function loadCachedBurgForCell(cellId) {
   if (!Number.isInteger(cellId) || cellId < 0) return null;
 
+  if (canUseApiRoutes()) {
+    const payload = await readJson(toProjectUrl(`api/burgs/${cellId}`), null);
+    const burg = sanitizeBurgPayload(payload?.burg || payload, cellId);
+    if (burg) {
+      setLocalBurgForCell(cellId, burg);
+      return burg;
+    }
+    return getLocalBurgForCell(cellId);
+  }
+
   const fromFile = await loadBurgFromAfmgDir(cellId);
   if (fromFile) {
     setLocalBurgForCell(cellId, fromFile);
@@ -157,5 +169,16 @@ export async function loadCachedBurgForCell(cellId) {
 
 export async function saveCachedBurgForCell(cellId, burg) {
   if (!Number.isInteger(cellId) || cellId < 0) return false;
+
+  if (canUseApiRoutes()) {
+    try {
+      await fetch(toProjectUrl(`api/burgs/${cellId}`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(burg),
+      });
+    } catch { /* ignore network errors */ }
+  }
+
   return setLocalBurgForCell(cellId, burg);
 }
