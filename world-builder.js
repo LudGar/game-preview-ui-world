@@ -407,8 +407,6 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   };
 
   let activeCellIndex = -1;
-  let highlightedCellIndex = -1;
-  let highlightedBurgId = null;
 
   const terrainMaterials = {
     land: new THREE.MeshStandardMaterial({
@@ -482,7 +480,6 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       const pos = converters.mapToPlane(b.x, b.y);
       const marker = new THREE.Mesh(markerGeo, mat);
       marker.position.set(pos.x, 1200, pos.z);
-      marker.userData.burgId = Number.isInteger(b?.i) ? b.i : null;
       renderLayers.settlements.add(marker);
 
       const markerList = settlementMarkersByCell.get(idx) || [];
@@ -525,24 +522,6 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
   applyRenderOptions();
 
-  function setSettlementVisibilityForCell(cellIndex, nextHighlightedBurgId = null) {
-    if (Number.isInteger(cellIndex) && cellIndex >= 0 && nextHighlightedBurgId != null) {
-      highlightedCellIndex = cellIndex;
-      highlightedBurgId = nextHighlightedBurgId;
-    }
-
-    for (const [idx, markers] of settlementMarkersByCell.entries()) {
-      const showCellMarkers = idx === cellIndex;
-      for (const marker of markers) {
-        const isHighlighted =
-          highlightedBurgId != null &&
-          idx === highlightedCellIndex &&
-          marker.userData?.burgId === highlightedBurgId;
-        marker.visible = showCellMarkers && !isHighlighted;
-      }
-    }
-  }
-
   function findCellByMapPoint(x, y) {
     const tryIndices = [];
     if (activeCellIndex >= 0) {
@@ -578,7 +557,6 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     }
 
     activeCellIndex = nextActive;
-    setSettlementVisibilityForCell(activeCellIndex);
   }
 
   async function handleCellEntered(cellIndex) {
@@ -599,6 +577,9 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       void saveCachedBurgForCell(cellIndex, discovered);
     }
 
+    const markers = settlementMarkersByCell.get(cellIndex) || [];
+    for (const marker of markers) marker.visible = false;
+
     const pos = converters.mapToPlane(discovered.x, discovered.y);
     window.dispatchEvent(
       new CustomEvent("world:burg-discovered", {
@@ -611,6 +592,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
           mfcgBurg: {
             ...(existing[0] || discovered),
           },
+          cityJson: cachedBurg?.city ?? null,
           mapX: Number(discovered.x),
           mapY: Number(discovered.y),
           position: { x: pos.x, y: 0, z: pos.z },
@@ -657,11 +639,22 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
     },
     getActiveCellIndex: () => activeCellIndex,
     setActiveCellFromPlanePosition,
+    /** Force city discovery at a position even if the cell hasn't changed.
+     *  Call this on manual fast-travel so same-cell teleports still trigger
+     *  handleCellEntered and fire world:burg-discovered. */
+    forceDiscoverAtPosition(position) {
+      activeCellIndex = -1;
+      setActiveCellFromPlanePosition(position);
+    },
     getCellViewForPlanePosition,
     settlementPositions,
+    getTerrainYForCell(cellIndex) {
+      const cell = cellData[Number(cellIndex)];
+      if (!cell) return 0.35;
+      return yForCell(cell);
+    },
     getRenderOptions: () => ({ ...renderOptions }),
     setRenderOptions: (nextOptions) => applyRenderOptions(nextOptions),
-    setSettlementVisibilityForCell,
     cleanup() {
       scene.remove(worldRoot);
       worldRoot.traverse((obj) => {
