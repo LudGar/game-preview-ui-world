@@ -1,4 +1,3 @@
-// map.js
 import { createTooltip } from "./tooltip.js";
 import { loadAllCachedBurgs } from "./burgs-store.js";
 
@@ -11,6 +10,82 @@ function htmlEscape(s) {
     .replaceAll("'", "&#039;");
 }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+// ── City overlay helpers (module-level, pure) ─────────────────────────────
+
+/** Collect all [x,y] points from a GeoJSON geometry (Polygon/MultiPolygon/GeometryCollection). */
+function collectPolyPoints(geom) {
+  const type = geom?.type;
+  if (type === "Polygon")      return (geom.coordinates ?? []).flat(1);
+  if (type === "MultiPolygon") return (geom.coordinates ?? []).flat(2);
+  if (type === "GeometryCollection") {
+    const pts = [];
+    for (const g of (geom.geometries ?? [])) pts.push(...collectPolyPoints(g));
+    return pts;
+  }
+  return [];
+}
+
+/** Convert a GeoJSON ring [[x,y]...] to an SVG path fragment.
+ *  Coords are MFCG metres; converted to Azgaar pixels via bx + x/mpp. */
+function cityRingToD(ring, bx, by, mpp) {
+  if (!ring || ring.length < 3) return "";
+  return ring.map((p, i) =>
+    `${i === 0 ? "M" : "L"}${(bx + p[0] / mpp).toFixed(4)},${(by + p[1] / mpp).toFixed(4)}`
+  ).join(" ") + " Z";
+}
+
+/** Polygon or MultiPolygon geometry -> SVG path d attribute string. */
+function cityPolyToD(geom, bx, by, mpp) {
+  const type = geom?.type;
+  if (type === "Polygon") {
+    return (geom.coordinates ?? []).map(r => cityRingToD(r, bx, by, mpp)).join(" ");
+  }
+  if (type === "MultiPolygon") {
+    return (geom.coordinates ?? []).flatMap(poly =>
+      poly.map(r => cityRingToD(r, bx, by, mpp))
+    ).join(" ");
+  }
+  return "";
+}
+
+/** LineString coords array -> SVG path d attribute string (open, no Z). */
+function cityLineToD(coords, bx, by, mpp) {
+  if (!coords || coords.length < 2) return "";
+  return coords.map((p, i) =>
+    `${i === 0 ? "M" : "L"}${(bx + p[0] / mpp).toFixed(4)},${(by + p[1] / mpp).toFixed(4)}`
+  ).join(" ");
+}
+
+/** Unwrap GeoJSON Feature to its geometry, or return bare geometry as-is. */
+function cityFeatGeom(f) {
+  return (f?.type === "Feature" && f.geometry) ? f.geometry : f;
+}
+
+/** Build a {id -> feature} lookup from a city GeoJSON FeatureCollection. */
+function indexCityFeatures(cityJson) {
+  const feat = {};
+  for (const f of (cityJson?.features ?? [])) {
+    if (f.id) feat[f.id] = f;
+  }
+  return feat;
+}
+
+const CITY_PALETTE = {
+  water:     "#4a8fbf",
+  rivers:    "#5a9fca",
+  earth:     "#d4c2a0",
+  fields:    "#8aaa5e",
+  greens:    "#5e9448",
+  squares:   "#b0a480",
+  buildings: "#bcac9a",
+  prisms:    "#9a8878",
+  roads:     "#7a6e5e",
+  walls:     "#9e9080",
+};
+
+const CITY_FILL_IDS  = new Set(["water", "earth", "fields", "greens", "squares", "buildings", "prisms"]);
+const CITY_DRAW_ORDER = ["water", "rivers", "earth", "fields", "greens", "squares", "buildings", "prisms", "roads", "walls"];
 
 const WORLD_WIDTH_KM = 42315;
 const WORLD_HEIGHT_KM = 18855;
@@ -168,13 +243,12 @@ function riversSvgFromWorld(world) {
   return `<svg viewBox="0 0 ${w} ${h}" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none;">${riverPaths.join("")}</svg>`;
 }
 
-// [Inference] Category split: we classify “city vs town” by population threshold.
-// If you later add explicit Azgaar type handling, we can use that.
 function classifyBurg(burg, cityPopThreshold) {
   if (burg?.capital) return "capital";
   const pop = typeof burg?.population === "number" ? burg.population : 0;
   return pop >= cityPopThreshold ? "city" : "town";
 }
+
 
 export function buildMapTab(
   panel,
@@ -185,6 +259,8 @@ export function buildMapTab(
     activeSaveId = null,
     getUiState = null,
     setUiState = null,
+    activeCityData = null,
+    getCharacterMapPos = null,
     onNodeClick = null,
   }
 ) {
@@ -277,7 +353,22 @@ export function buildMapTab(
             <div id="mapOutline" style="position:absolute; inset:0; z-index:1;"></div>
             <div id="mapRivers" style="position:absolute; inset:0; z-index:2;"></div>
             <div id="mapRoads" style="position:absolute; inset:0; z-index:2;"></div>
+            <svg id="mapCitySvg" style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:2;"></svg>
             <div id="mapMarkers" style="position:absolute; inset:0; z-index:3;"></div>
+
+            <!-- Player position marker -->
+            <div id="mapPlayerMarker" style="
+              position:absolute;
+              width:12px; height:12px;
+              border-radius:50%;
+              background:#4fc3f7;
+              border:2px solid rgba(255,255,255,0.95);
+              transform:translate(-50%,-50%);
+              pointer-events:none;
+              z-index:5;
+              display:none;
+              box-shadow:0 0 0 5px rgba(79,195,247,0.22), 0 0 14px rgba(79,195,247,0.70);
+            "></div>
 
             <div id="mapStatus" style="
               position:absolute; left:18px; bottom:18px;
@@ -312,14 +403,16 @@ export function buildMapTab(
     </div>
   `;
 
-  const viewport = panel.querySelector("#mapViewport");
-  const mapCanvas = panel.querySelector("#mapCanvas");
-  const outlineEl = panel.querySelector("#mapOutline");
-  const riversEl = panel.querySelector("#mapRivers");
-  const roadsEl = panel.querySelector("#mapRoads");
-  const markersEl = panel.querySelector("#mapMarkers");
-  const statusEl = panel.querySelector("#mapStatus");
-  const zoomBadgeEl = panel.querySelector("#mapZoomBadge");
+  const viewport      = panel.querySelector("#mapViewport");
+  const mapCanvas     = panel.querySelector("#mapCanvas");
+  const outlineEl     = panel.querySelector("#mapOutline");
+  const riversEl      = panel.querySelector("#mapRivers");
+  const roadsEl       = panel.querySelector("#mapRoads");
+  const citySvg       = panel.querySelector("#mapCitySvg");
+  const markersEl     = panel.querySelector("#mapMarkers");
+  const playerMarker  = panel.querySelector("#mapPlayerMarker");
+  const statusEl      = panel.querySelector("#mapStatus");
+  const zoomBadgeEl   = panel.querySelector("#mapZoomBadge");
 
   const elCap = panel.querySelector("#fltCapitals");
   const elCity = panel.querySelector("#fltCities");
@@ -344,6 +437,13 @@ export function buildMapTab(
 
   let world = null;
   let markers = []; // { el, labelEl, burg, pop, isCapital, category }
+
+  // City overlay state
+  let cityBurg = activeCityData?.burg ?? null;
+  let cityJson  = activeCityData?.cityJson ?? null;
+  let metersPerPx = DEFAULT_KM_PER_PX * 1000;   // updated once world loads
+  let cityEarthWidthAzgaar = 0;                  // cached bounding-box width
+  let cityOverlayDirty = true;                   // rebuild SVG paths when true
   const markerByKey = new Map();
   let selectedKey = null;
   let stateNameById = new Map();
@@ -503,10 +603,181 @@ export function buildMapTab(
     updateFiltersBadge();
   }
 
+  // ── City SVG overlay ─────────────────────────────────────────────────────
+
+  function drawCityOverlay() {
+    if (!citySvg) return;
+
+    if (!cityJson || !cityBurg) {
+      if (citySvg.childElementCount > 0) citySvg.innerHTML = "";
+      return;
+    }
+
+    // Lazy-compute earth bounding-box width in Azgaar pixels
+    if (cityEarthWidthAzgaar <= 0 && metersPerPx > 0) {
+      const feat = indexCityFeatures(cityJson);
+      const ef   = feat["earth"];
+      if (ef) {
+        const pts = collectPolyPoints(cityFeatGeom(ef));
+        if (pts.length >= 2) {
+          const xs = pts.map(p => p[0]);
+          cityEarthWidthAzgaar = (Math.max(...xs) - Math.min(...xs)) / metersPerPx;
+        }
+      }
+    }
+
+    // Visibility gate: hide when city footprint < 2 CSS pixels at current zoom
+    if (cityEarthWidthAzgaar > 0 && cityEarthWidthAzgaar * scale < 2) {
+      if (citySvg.style.display !== "none") citySvg.style.display = "none";
+      return;
+    }
+    citySvg.style.display = "";
+
+    // Skip expensive path rebuild unless data changed
+    if (!cityOverlayDirty && citySvg.childElementCount > 0) return;
+    cityOverlayDirty = false;
+
+    citySvg.innerHTML = "";
+
+    const bx   = Number(cityBurg.x);
+    const by   = Number(cityBurg.y);
+    const mpp  = metersPerPx;
+    const feat = indexCityFeatures(cityJson);
+    const ns   = "http://www.w3.org/2000/svg";
+
+    for (const id of CITY_DRAW_ORDER) {
+      const f = feat[id];
+      if (!f) continue;
+      const geom  = cityFeatGeom(f);
+      if (!geom)  continue;
+      const color = CITY_PALETTE[id] ?? "#888";
+      const el    = document.createElementNS(ns, "path");
+
+      if (CITY_FILL_IDS.has(id)) {
+        // Polygon / MultiPolygon - filled area
+        const d = cityPolyToD(geom, bx, by, mpp);
+        if (!d.trim()) continue;
+        el.setAttribute("d", d);
+        el.setAttribute("fill", color);
+        el.setAttribute("fill-opacity", id === "water" ? "0.70" : "0.65");
+        el.setAttribute("stroke", "none");
+
+      } else if (id === "rivers") {
+        // GeometryCollection of LineStrings
+        let d = "";
+        const subGeoms = geom.type === "GeometryCollection" ? (geom.geometries ?? []) : [geom];
+        for (const g of subGeoms) {
+          if (g?.type === "LineString") d += cityLineToD(g.coordinates, bx, by, mpp) + " ";
+        }
+        if (!d.trim()) continue;
+        const sw = ((subGeoms[0]?.width ?? 10) / mpp).toFixed(6);
+        el.setAttribute("d", d);
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", sw);
+        el.setAttribute("stroke-linecap", "round");
+        el.setAttribute("stroke-linejoin", "round");
+
+      } else if (id === "roads") {
+        // GeometryCollection of LineStrings, each may have own width
+        let d = "";
+        const subGeoms = geom.type === "GeometryCollection" ? (geom.geometries ?? []) : [geom];
+        for (const g of subGeoms) {
+          if (g?.type === "LineString") d += cityLineToD(g.coordinates, bx, by, mpp) + " ";
+        }
+        if (!d.trim()) continue;
+        // Default road width ~8m
+        const sw = (8 / mpp).toFixed(6);
+        el.setAttribute("d", d);
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", sw);
+        el.setAttribute("stroke-linecap", "round");
+        el.setAttribute("stroke-linejoin", "round");
+
+      } else if (id === "walls") {
+        // GeometryCollection of Polygons rendered as closed outlines
+        let d = "";
+        const subGeoms = geom.type === "GeometryCollection" ? (geom.geometries ?? []) : [geom];
+        for (const g of subGeoms) {
+          if (g?.type === "Polygon") {
+            for (const ring of (g.coordinates ?? [])) d += cityRingToD(ring, bx, by, mpp) + " ";
+          }
+        }
+        if (!d.trim()) continue;
+        const sw = ((subGeoms[0]?.width ?? 6) / mpp).toFixed(6);
+        el.setAttribute("d", d);
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", sw);
+        el.setAttribute("stroke-linecap", "round");
+        el.setAttribute("stroke-linejoin", "round");
+
+      } else {
+        continue;
+      }
+
+      citySvg.appendChild(el);
+    }
+  }
+
+  /** Animate (or snap) pan+zoom so the city fills ~70% of the viewport width. */
+  function autoZoomToCity(burg, cJson, animate = true) {
+    if (!burg || !cJson) return;
+
+    const feat    = indexCityFeatures(cJson);
+    const ef      = feat["earth"];
+    if (!ef) return;
+    const pts     = collectPolyPoints(cityFeatGeom(ef));
+    if (pts.length < 2) return;
+
+    const xs      = pts.map(p => p[0]);
+    const earthWidthM       = Math.max(...xs) - Math.min(...xs);
+    const earthWidthAzgaar  = earthWidthM / metersPerPx;
+    if (earthWidthAzgaar <= 0) return;
+
+    const vpW      = viewport.clientWidth  || 800;
+    const vpH      = viewport.clientHeight || 600;
+    const canvasW  = parseFloat(mapCanvas.style.width)  || getWorldSizePxFromKm(world).width;
+    const canvasH  = parseFloat(mapCanvas.style.height) || getWorldSizePxFromKm(world).height;
+
+    const targetScale = clamp(vpW * 0.7 / earthWidthAzgaar, 1, 2500);
+    // Pan so the burg sits at the viewport center
+    const targetPanX  = (canvasW / 2 - burg.x) * targetScale;
+    const targetPanY  = (canvasH / 2 - burg.y) * targetScale;
+
+    if (!animate) {
+      scale = targetScale;
+      panX  = targetPanX;
+      panY  = targetPanY;
+      void apply(true);
+      return;
+    }
+
+    const startScale = scale;
+    const startPanX  = panX;
+    const startPanY  = panY;
+    const t0         = performance.now();
+    const DURATION   = 600;
+
+    const tick = (now) => {
+      const t    = Math.min((now - t0) / DURATION, 1.0);
+      const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; // ease-in-out quad
+      scale = startScale + (targetScale - startScale) * ease;
+      panX  = startPanX  + (targetPanX  - startPanX)  * ease;
+      panY  = startPanY  + (targetPanY  - startPanY)  * ease;
+      apply(false);
+      if (t < 1.0) requestAnimationFrame(tick);
+      else         void apply(true);
+    };
+    requestAnimationFrame(tick);
+  }
+
   const apply = async (shouldPersist = false) => {
     mapCanvas.style.transform =
       `translate(-50%,-50%) translate(${panX}px, ${panY}px) scale(${scale})`;
 
+    drawCityOverlay();
     updateVisibility();
 
     if (shouldPersist) {
@@ -519,15 +790,45 @@ export function buildMapTab(
   };
 
   const onWorldBurgDiscovered = (ev) => {
-    const burg = ev?.detail;
+    const burg        = ev?.detail;
+    const newCityJson = ev?.detail?.cityJson ?? null;
     if (!burg) return;
     upsertMarkerForBurg(burg);
     updateStatus();
     updateSelectionStyles();
+
+    if (newCityJson) {
+      cityBurg             = burg;
+      cityJson             = newCityJson;
+      cityEarthWidthAzgaar = 0;
+      cityOverlayDirty     = true;
+      autoZoomToCity(burg, newCityJson, true);
+    } else {
+      // Burg has no saved city yet - clear any stale overlay from a previous burg.
+      cityBurg             = null;
+      cityJson             = null;
+      cityEarthWidthAzgaar = 0;
+      cityOverlayDirty     = true;
+    }
+
     void apply(true);
   };
 
   window.addEventListener("world:burg-discovered", onWorldBurgDiscovered);
+
+  // Fired by app.js when MFCG finishes generating a city for a burg that had no saved data.
+  const onCityReady = (ev) => {
+    const newBurg     = ev?.detail?.burg;
+    const newCityJson = ev?.detail?.cityJson ?? null;
+    if (!newBurg || !newCityJson) return;
+    cityBurg             = newBurg;
+    cityJson             = newCityJson;
+    cityEarthWidthAzgaar = 0;
+    cityOverlayDirty     = true;
+    autoZoomToCity(newBurg, newCityJson, true);
+    void apply(true);
+  };
+  window.addEventListener("world:city-ready", onCityReady);
 
   const onDown = (e) => {
     isDown = true;
@@ -565,7 +866,7 @@ export function buildMapTab(
     const prevScale = scale;
     const delta = Math.sign(e.deltaY);
     const next = scale * (delta > 0 ? 0.92 : 1.08);
-    scale = clamp(next, 0.45, 2.4);
+    scale = clamp(next, 0.45, 2500);
 
     // Mouse-centered zoom
     const k = scale / prevScale;
@@ -644,6 +945,10 @@ export function buildMapTab(
       if (!res.ok) throw new Error(`Failed to fetch world JSON: ${res.status}`);
       world = await res.json();
 
+      // Update metersPerPx from actual world data and invalidate cached earth width
+      metersPerPx          = getDistanceScaleKmPerPx(world) * 1000;
+      cityEarthWidthAzgaar = 0; // force re-compute with correct scale
+
       const info = world?.info || {};
       const pack = world?.pack || {};
       const burgs = Array.isArray(pack?.burgs) ? pack.burgs : [];
@@ -704,7 +1009,15 @@ export function buildMapTab(
       statusEl.textContent = `Loaded: ${count} settlements • ${info.mapName || "World"} • v${info.version || "?"}`;
 
       await syncFiltersFromUi(); // applies visibility + persists
-      await apply(true);         // applies map view + persists
+
+      // If city data was pre-loaded (player already in a burg) and there is no
+      // meaningful persisted zoom, snap straight to the city view.
+      if (cityBurg && cityJson && scale <= 1.5) {
+        autoZoomToCity(cityBurg, cityJson, false); // snap, no animation; calls apply(true)
+      } else {
+        await apply(true);       // applies map view + persists
+      }
+
       updateStatus();
       updateSelectionStyles();
     } catch (err) {
@@ -713,7 +1026,27 @@ export function buildMapTab(
     }
   })();
 
+  // ── Character position indicator ─────────────────────────────
+  // Poll the character's world-plane position each frame and move
+  // the player marker to the corresponding Azgaar map pixel coords.
+  let charRafId = null;
+  if (playerMarker && typeof getCharacterMapPos === "function") {
+    const tickCharMarker = () => {
+      const pos = getCharacterMapPos();
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        playerMarker.style.left    = `${pos.x}px`;
+        playerMarker.style.top     = `${pos.y}px`;
+        playerMarker.style.display = "block";
+      } else {
+        playerMarker.style.display = "none";
+      }
+      charRafId = requestAnimationFrame(tickCharMarker);
+    };
+    charRafId = requestAnimationFrame(tickCharMarker);
+  }
+
   return () => {
+    if (charRafId !== null) cancelAnimationFrame(charRafId);
     document.removeEventListener("mousemove", onDocMove);
     viewport.removeEventListener("pointerdown", onDown);
     window.removeEventListener("pointermove", onMove);
@@ -721,5 +1054,6 @@ export function buildMapTab(
     viewport.removeEventListener("wheel", onWheel);
     tip.hide();
     window.removeEventListener("world:burg-discovered", onWorldBurgDiscovered);
+    window.removeEventListener("world:city-ready", onCityReady);
   };
 }
