@@ -1,4 +1,3 @@
-// character.js
 import { ARMOR_GROUPS, VARIANTS_BY_KEY, RARITIES } from "./data.js";
 
 function htmlEscape(s) {
