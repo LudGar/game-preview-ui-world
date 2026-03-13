@@ -1,4 +1,3 @@
-// cosmetics.js
 import {
   COSMETIC_GROUPS,
   VARIANTS_BY_KEY,
