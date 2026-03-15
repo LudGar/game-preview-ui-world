@@ -379,6 +379,7 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   const settlementByCell = new Map();
   const settlementMarkersByCell = new Map();
   const settlementPositions = [];
+  const settlementCandidates = [];
   for (const b of burgs) {
     if (!b || b.removed || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
     const cellIndex = Number.isInteger(b.cell) ? b.cell : null;
@@ -397,6 +398,13 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
       mapY: Number(b.y),
       position: new THREE.Vector3(pos.x, 0, pos.z),
     });
+
+    settlementCandidates.push({
+      ...b,
+      cell: cellIndex,
+      x: Number(b.x),
+      y: Number(b.y),
+    });
   }
 
   const markerGeo = new THREE.SphereGeometry(1000, 12, 12);
@@ -407,6 +415,26 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
   };
 
   let activeCellIndex = -1;
+
+  function findNearestSettlementForCell(cellIndex) {
+    const cell = cellData[cellIndex];
+    if (!cell || settlementCandidates.length === 0) return null;
+
+    const originX = Number(cell.center?.x);
+    const originY = Number(cell.center?.y);
+    if (!Number.isFinite(originX) || !Number.isFinite(originY)) return null;
+
+    let best = null;
+    for (const candidate of settlementCandidates) {
+      if (!Number.isFinite(candidate.x) || !Number.isFinite(candidate.y)) continue;
+      const dx = candidate.x - originX;
+      const dy = candidate.y - originY;
+      const d2 = dx * dx + dy * dy;
+      if (!best || d2 < best.d2) best = { candidate, d2 };
+    }
+
+    return best?.candidate || null;
+  }
 
   const terrainMaterials = {
     land: new THREE.MeshStandardMaterial({
@@ -565,34 +593,58 @@ export async function buildWorldFromAzgaar({ scene, url, layer = 0 }) {
 
     const cachedBurg = await loadCachedBurgForCell(cellIndex);
     const existing = settlementByCell.get(cellIndex) || [];
-    const generatedBurg = makeGeneratedBurgFromCell({
-      cellIndex,
-      cell,
-      existingBurgsInCell: existing,
-    });
-    const discovered = cachedBurg || existing[0] || generatedBurg;
+    let discovered = cachedBurg || existing[0] || null;
+    let cachedForDiscovered = cachedBurg;
+
+    if (!discovered) {
+      const nearestSettlement = findNearestSettlementForCell(cellIndex);
+      if (nearestSettlement) {
+        discovered = nearestSettlement;
+        const nearestCell = Number.isInteger(nearestSettlement.cell) ? nearestSettlement.cell : -1;
+        if (nearestCell >= 0 && nearestCell !== cellIndex) {
+          cachedForDiscovered = await loadCachedBurgForCell(nearestCell);
+        }
+      }
+    }
+
+    if (!discovered) {
+      discovered = makeGeneratedBurgFromCell({
+        cellIndex,
+        cell,
+        existingBurgsInCell: existing,
+      });
+    }
+
     if (!discovered) return;
 
-    if (!cachedBurg && discovered.cell === cellIndex) {
+    const discoveredCellIndex = Number.isInteger(discovered.cell) ? discovered.cell : cellIndex;
+    const discoveredCell = cells[discoveredCellIndex] || cell;
+
+    if (!cachedForDiscovered && discoveredCellIndex === cellIndex) {
       void saveCachedBurgForCell(cellIndex, discovered);
     }
 
     const markers = settlementMarkersByCell.get(cellIndex) || [];
     for (const marker of markers) marker.visible = false;
 
+    if (discoveredCellIndex !== cellIndex) {
+      const nearestMarkers = settlementMarkersByCell.get(discoveredCellIndex) || [];
+      for (const marker of nearestMarkers) marker.visible = false;
+    }
+
     const pos = converters.mapToPlane(discovered.x, discovered.y);
     window.dispatchEvent(
       new CustomEvent("world:burg-discovered", {
         detail: {
           ...discovered,
-          cell: cellIndex,
+          cell: discoveredCellIndex,
           mfcgCell: {
-            r: Number(cell?.r || 0),
+            r: Number(discoveredCell?.r || 0),
           },
           mfcgBurg: {
             ...(existing[0] || discovered),
           },
-          cityJson: cachedBurg?.city ?? null,
+          cityJson: cachedForDiscovered?.city ?? null,
           mapX: Number(discovered.x),
           mapY: Number(discovered.y),
           position: { x: pos.x, y: 0, z: pos.z },
